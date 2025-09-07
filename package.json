@@ -1,6 +1,6 @@
 {
   "name": "heyagent",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "HeyAgent.dev - Get notified when Claude Code needs you",
   "main": "index.js",
   "type": "module",
