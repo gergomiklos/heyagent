@@ -1,0 +1,69 @@
+{
+  "name": "heyagent",
+  "version": "0.0.1",
+  "description": "HeyAgent.dev - Get notified when Claude Code needs you",
+  "main": "index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "hey": "./bin/hey.js"
+  },
+  "scripts": {
+    "start": "./bin/hey.js",
+    "push": "git add . && git commit -m 'Update' && git push",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run lint && npm run format:check",
+    "prepublishOnly": "npm run check",
+    "pack": "npm pack",
+    "pack:install": "npm pack && npm install -g heyagent-*.tgz",
+    "pack:test": "npm pack && mkdir -p .tmp && cd .tmp && npm init -y && npm install ../heyagent-*.tgz && ./node_modules/.bin/hey --version",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major",
+    "release:patch": "npm run check && npm version patch && npm publish && git push --follow-tags",
+    "release:minor": "npm run check && npm version minor && npm publish && git push --follow-tags",
+    "release:major": "npm run check && npm version major && npm publish && git push --follow-tags",
+    "release:beta": "npm run check && npm version prerelease --preid=beta && npm publish --tag beta && git push --follow-tags"
+  },
+  "keywords": [
+    "claude",
+    "notifications",
+    "cli",
+    "terminal",
+    "heyagent"
+  ],
+  "author": "HeyAgent Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gergomiklos/heyagent.git"
+  },
+  "homepage": "https://heyagent.dev",
+  "bugs": {
+    "url": "https://github.com/gergomiklos/heyagent/issues"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "node-notifier": "^10.0.1",
+    "@lydell/node-pty": "^1.0.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "prompts": "^2.4.2",
+    "qrcode-terminal": "^0.12.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "@eslint/js": "^9.0.0",
+    "prettier": "^3.0.0"
+  }
+}

@@ -1,0 +1,89 @@
+# HeyAgent
+
+Get notified when Claude Code needs your attention!
+
+## Installation
+
+Install globally via npm:
+
+```bash
+    npm install -g heyagent
+```
+
+## Quick Start
+
+1. Install the package globally
+2. Run `hey claude` to start Claude with notifications
+
+## Usage
+
+### Basic Commands
+
+```bash
+# Start Claude with notifications
+hey claude
+
+# Pass arguments to Claude
+hey claude --help
+hey claude -c    # Continue last session
+
+# Configure notification settings
+hey config
+
+# Manage license for paid notification channels
+hey license
+
+# Toggle notifications
+hey on           # Enable notifications
+hey off          # Disable notifications
+
+# Setup without starting Claude
+hey setup claude
+
+# Show help
+hey help
+```
+
+### Notification Methods
+
+HeyAgent supports multiple notification methods:
+
+- **Desktop notifications** (default)
+- **Email notifications\***
+- **WhatsApp notifications\***
+- **Telegram notifications\***
+- **Slack notifications\***
+- **Custom webhook notifications**
+
+Configure your preferred method with `hey config`.
+
+\*Pro notification channels require a license. Run `hey license` to set up.
+
+### Slash Commands (within Claude)
+
+While Claude is running, you can use:
+
+```
+/hey on          # Enable notifications
+/hey off         # Disable notifications
+```
+
+## How It Works
+
+HeyAgent wraps your Claude Code session and monitors for periods of inactivity, sending you notifications when Claude is waiting for your input.
+
+## Requirements
+
+- Node.js 18.0.0 or higher
+- Claude Code CLI installed and accessible in PATH
+- Active Claude Code session or license
+- HeyAgent license for paid notification channels
+
+## Support
+
+- Documentation: https://heyagent.dev
+- Issues: Report bugs and feature requests on GitHub
+
+## License
+
+MIT License - see LICENSE file for details.
