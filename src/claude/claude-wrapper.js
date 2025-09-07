@@ -39,28 +39,8 @@ export default class ClaudeWrapper {
     }
   }
 
-  async checkClaudeAvailable() {
-    try {
-      const { spawn } = await import('child_process');
-      const checkClaude = spawn('which', ['claude']);
-
-      return new Promise(resolve => {
-        checkClaude.on('close', code => {
-          resolve(code === 0);
-        });
-      });
-    } catch {
-      return false;
-    }
-  }
-
   async start(claudeArgs = []) {
     await this.init();
-
-    if (!(await this.checkClaudeAvailable())) {
-      console.error('Error: Please install Claude Code CLI first');
-      process.exit(1);
-    }
 
     this.claude = pty.spawn('claude', claudeArgs, {
       name: 'xterm-color',
