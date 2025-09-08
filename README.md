@@ -1,13 +1,13 @@
 # HeyAgent
 
-Get notified when Claude Code and Codex CLI need your attention!
+### Get notified when Claude Code and Codex CLI need your attention!
 
 ## Installation
 
 Install globally via npm:
 
 ```bash
-    npm install -g heyagent
+npm install -g heyagent
 ```
 
 ## Quick Start
@@ -75,6 +75,7 @@ While Claude is running, you can use:
 ## How It Works
 
 HeyAgent wraps your Claude Code or Codex CLI session:
+
 - Claude Code: uses hooks and slash commands for event-driven notifications.
 - Codex CLI: listens to stdout and sends a notification after inactivity.
 
