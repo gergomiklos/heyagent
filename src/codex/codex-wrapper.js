@@ -79,9 +79,10 @@ export default class CodexWrapper {
       if (data[0] === 0x0d || data[0] === 0x0a) {
         this.logger.info('Submit detected, resetting state to working');
         this.appState = 'working';
-      } else if (data[0] !== 27) {
+      } else {
         this.logger.info('Input detected, resetting state to idle');
         this.appState = 'idle';
+        this.clearTimer();
       }
     });
 

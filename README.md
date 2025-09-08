@@ -13,8 +13,8 @@ Install globally via npm:
 ## Quick Start
 
 1. Install the package globally
-2. Run `hey claude` to start Claude with notifications
-3. Or run `hey codex` to start Codex with notifications
+2. Run `hey claude` to start Claude Code with notifications
+3. Or run `hey codex` to start OpenAI Codex CLI with notifications
 
 ## Usage
 
@@ -81,8 +81,8 @@ HeyAgent wraps your Claude Code or Codex CLI session:
 ## Requirements
 
 - Node.js 18.0.0 or higher
-- Claude Code CLI or Codex CLI installed
-- Active Claude Code or Codex CLI license
+- Claude Code CLI or OpenAI Codex CLI installed
+- Active Claude Code or OpenAI Codex CLI license
 - HeyAgent license for paid notification channels
 
 ## Support
