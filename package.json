@@ -1,7 +1,7 @@
 {
   "name": "heyagent",
   "version": "0.0.2",
-  "description": "HeyAgent.dev - Get notified when Claude Code needs you",
+  "description": "HeyAgent.dev - Get notified when Claude Code or Codex CLI need you",
   "main": "index.js",
   "type": "module",
   "engines": {
