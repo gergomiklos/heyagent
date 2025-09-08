@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import Config from '../src/config.js';
 import ConfigSetup from '../src/config-setup.js';
 import Logger from '../src/logger.js';
-import { startClaudeWrapper } from '../src/index.js';
+import { startClaudeWrapper, startCodexWrapper } from '../src/index.js';
 import HookHandler from '../src/claude/hook.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,17 +17,17 @@ const logger = new Logger('hey');
 
 function showHelp() {
   console.log(`
-HeyAgent: Get notified when Claude Code needs your attention!
+HeyAgent: Get notified when Claude Code or Codex CLI need your attention!
 
 Usage:
   hey claude [args...]   Run Claude with notifications (interactive)
+  hey codex [args...]    Run Codex with notifications (interactive)
   hey setup claude       Setup notifications for Claude (headless init)
   hey config             Configure notification settings
   hey license            Manage your license
   hey on                 Enable notifications
   hey off                Disable notifications
   hey --version          Show version number
-  hey claude-hook        Handle Claude Code hook events (internal)
 
 Examples:
   hey claude                    # Start Claude with notifications
@@ -46,7 +46,7 @@ async function main() {
 
   if (command === 'config') {
     // Configure notifications
-    console.log('\nHeyAgent: Get notified when Claude Code needs your input!\n');
+    console.log('\nHeyAgent: Get notified when Claude Code or Codex CLI need your input!\n');
     const config = new Config();
     const setup = new ConfigSetup(config);
     await setup.runConfigWizard();
@@ -66,6 +66,13 @@ async function main() {
     // Run the Claude wrapper with remaining args
     const claudeArgs = args.slice(1); // Everything after 'claude'
     await startClaudeWrapper(claudeArgs);
+    return;
+  }
+
+  if (command === 'codex') {
+    // Run the Codex wrapper with remaining args
+    const codexArgs = args.slice(1); // Everything after 'codex'
+    await startCodexWrapper(codexArgs);
     return;
   }
 

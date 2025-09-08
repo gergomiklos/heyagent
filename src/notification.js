@@ -8,9 +8,9 @@ class NotificationService {
     this.logger = new Logger('notification');
   }
 
-  async send(message = null) {
-    const title = 'Hey, Claude Code is waiting for you!';
-    message = message || 'Claude Code finished';
+  async send(title, message) {
+    if (!title) throw new Error('Notification title is required');
+    if (!message) throw new Error('Notification message is required');
 
     if (!this.config.notificationsEnabled) {
       return;

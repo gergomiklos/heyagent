@@ -1,6 +1,6 @@
 # HeyAgent
 
-Get notified when Claude Code needs your attention!
+Get notified when Claude Code and Codex CLI need your attention!
 
 ## Installation
 
@@ -14,6 +14,7 @@ Install globally via npm:
 
 1. Install the package globally
 2. Run `hey claude` to start Claude with notifications
+3. Or run `hey codex` to start Codex with notifications
 
 ## Usage
 
@@ -23,7 +24,10 @@ Install globally via npm:
 # Start Claude with notifications
 hey claude
 
-# Pass arguments to Claude
+# Start Codex with notifications
+hey codex
+
+# Pass arguments to Claude/Codex
 hey claude --help
 hey claude -c    # Continue last session
 
@@ -37,7 +41,7 @@ hey license
 hey on           # Enable notifications
 hey off          # Disable notifications
 
-# Setup without starting Claude
+# Setup without starting Claude (hooks and slash commands)
 hey setup claude
 
 # Show help
@@ -59,7 +63,7 @@ Configure your preferred method with `hey config`.
 
 \*Pro notification channels require a license. Run `hey license` to set up.
 
-### Slash Commands (within Claude)
+### Slash Commands (within Claude Code only)
 
 While Claude is running, you can use:
 
@@ -70,13 +74,15 @@ While Claude is running, you can use:
 
 ## How It Works
 
-HeyAgent wraps your Claude Code session and monitors for periods of inactivity, sending you notifications when Claude is waiting for your input.
+HeyAgent wraps your Claude Code or Codex CLI session:
+- Claude Code: uses hooks and slash commands for event-driven notifications.
+- Codex CLI: listens to stdout and sends a notification after inactivity.
 
 ## Requirements
 
 - Node.js 18.0.0 or higher
-- Claude Code CLI installed and accessible in PATH
-- Active Claude Code session or license
+- Claude Code CLI or Codex CLI installed
+- Active Claude Code or Codex CLI license
 - HeyAgent license for paid notification channels
 
 ## Support

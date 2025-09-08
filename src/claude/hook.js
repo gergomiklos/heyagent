@@ -1,5 +1,6 @@
 import process from 'process';
 import Logger from '../logger.js';
+import { NOTIFY_TITLE_CLAUDE, NOTIFY_MSG_CLAUDE_DONE } from '../constants.js';
 
 import Config from '../config.js';
 import NotificationService from '../notification.js';
@@ -35,9 +36,9 @@ class HookHandler {
     const notificationService = this.getNotificationService();
 
     if (eventType === 'Stop') {
-      await notificationService.send();
+      await notificationService.send(NOTIFY_TITLE_CLAUDE, NOTIFY_MSG_CLAUDE_DONE);
     } else if (eventType === 'Notification') {
-      await notificationService.send(message);
+      await notificationService.send(NOTIFY_TITLE_CLAUDE, message);
     } else {
       this.logger.info(`Unknown event type: ${eventType}`);
     }
