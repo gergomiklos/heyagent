@@ -38,6 +38,7 @@ export default class ClaudeWrapper {
   async start(claudeArgs = []) {
     await this.init();
 
+    console.log('Starting claude...');
     this.claude = pty.spawn('claude', claudeArgs, {
       name: 'xterm-color',
       cwd: process.cwd(),

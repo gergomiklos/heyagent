@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import Config from '../src/config.js';
 import ConfigSetup from '../src/config-setup.js';
 import Logger from '../src/logger.js';
-import { startClaudeWrapper, startCodexWrapper } from '../src/index.js';
+import { startClaudeWrapper, startCodexWrapper, startAgentWrapper } from '../src/index.js';
 import HookHandler from '../src/claude/hook.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +22,7 @@ HeyAgent: Get notified when Claude Code or Codex CLI need your attention!
 Usage:
   hey claude [args...]   Run Claude with notifications (interactive)
   hey codex [args...]    Run Codex with notifications (interactive)
+  hey <agent> [args...]  Run any CLI agent with notifications (interactive)
   hey setup claude       Setup notifications for Claude (headless init)
   hey config             Configure notification settings
   hey license            Manage your license
@@ -31,6 +32,9 @@ Usage:
 
 Examples:
   hey claude                    # Start Claude with notifications
+  hey codex                     # Start Codex with notifications
+  hey droid                     # Start Droid with notifications
+  hey gemini                    # Start Gemini with notifications
   hey claude --help             # Pass --help to Claude
   hey claude -c                 # Pass -c flag to Claude to continue the last session
 
@@ -113,9 +117,12 @@ async function main() {
     return;
   }
 
-  // Unknown command - show help
+  // Unknown command - try to run it as an agent
   if (command != 'help' && command != '--help' && command != '-h') {
-    console.log(`Unknown command: ${command}`);
+    // Try to run as a generic agent
+    const agentArgs = args.slice(1); // Everything after the agent name
+    await startAgentWrapper(command, agentArgs);
+    return;
   }
   showHelp();
 }
