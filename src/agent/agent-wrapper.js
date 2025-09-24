@@ -98,7 +98,6 @@ export default class AgentWrapper {
     // Handle exit and signals
     this.agent.onExit(() => {
       this.cleanup(false);
-      console.log(`${this.agentName} process exited, cleaning up...`);
     });
     process.on('SIGINT', () => this.cleanup(true));
     process.on('SIGTERM', () => this.cleanup(true));
