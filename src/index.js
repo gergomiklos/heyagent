@@ -1,5 +1,6 @@
 import ClaudeWrapper from './claude/claude-wrapper.js';
 import CodexWrapper from './codex/codex-wrapper.js';
+import AgentWrapper from './agent/agent-wrapper.js';
 import Config from './config.js';
 import ConfigSetup from './config-setup.js';
 import Logger from './logger.js';
@@ -70,4 +71,30 @@ export async function startCodexWrapper(codexArgs = []) {
 
   const wrapper = new CodexWrapper(config);
   await wrapper.start(codexArgs);
+}
+
+export async function startAgentWrapper(agentName, agentArgs = []) {
+  const logger = new Logger(`main-${agentName}`);
+  logger.info(`HeyAgent ${agentName} started`);
+
+  const capitalizedName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+  console.log(`\n⚡ Welcome to HeyAgent!`);
+  console.log(`You will be notified when ${capitalizedName} is waiting for you.\n`);
+
+  const config = new Config();
+  logger.info(`Settings loaded: ${JSON.stringify(config.data)}`);
+
+  // Show latest news (quick, silent on failure)
+  await showLatestNews();
+
+  console.log('Tips:');
+  console.log('  - Configure notifications: hey config');
+  console.log('  - Get help: hey help');
+  console.log('  - See more: https://heyagent.dev \n');
+
+  const setup = new ConfigSetup(config);
+  await setup.runSetupWizard();
+
+  const wrapper = new AgentWrapper(config, agentName);
+  await wrapper.start(agentArgs);
 }

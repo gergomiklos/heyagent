@@ -2,18 +2,26 @@ import pty from '@lydell/node-pty';
 import process from 'process';
 import Logger from '../logger.js';
 import NotificationService from '../notification.js';
-import { NOTIFY_TITLE_CODEX, NOTIFY_MSG_CODEX_STOPPED } from '../constants.js';
 
-// Minimal Codex wrapper: spawn `codex`, mirror I/O, and notify after inactivity.
-export default class CodexWrapper {
-  constructor(config) {
+function createNotificationMessages(agentName) {
+  const capitalizedName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+  return {
+    title: `Hey, ${capitalizedName} is waiting for you!`,
+    message: `${capitalizedName} stopped`,
+  };
+}
+
+export default class AgentWrapper {
+  constructor(config, agentName) {
     this.config = config;
-    this.logger = new Logger('codex-wrapper');
-    this.codex = null;
+    this.agentName = agentName;
+    this.logger = new Logger(`agent-wrapper-${agentName}`);
+    this.agent = null;
     this.notificationService = new NotificationService(this.config);
     this.inactivityTimer = null;
     this.inactivityTimeoutMs = 5000;
     this.appState = 'idle'; // 'idle' | 'working' | 'notified'
+    this.notifications = createNotificationMessages(agentName);
   }
 
   clearTimer() {
@@ -26,12 +34,11 @@ export default class CodexWrapper {
   scheduleInactivityCheck() {
     this.clearTimer();
     this.inactivityTimer = setTimeout(async () => {
-      // If Codex has been producing output and then became silent, alert once.
       this.logger.info('Inactivity check triggered, state is: ' + this.appState);
       if (this.appState === 'working') {
         this.appState = 'notified';
         try {
-          await this.notificationService.send(NOTIFY_TITLE_CODEX, NOTIFY_MSG_CODEX_STOPPED);
+          await this.notificationService.send(this.notifications.title, this.notifications.message);
         } catch (err) {
           this.logger.error(`Notification error: ${err.message || err}`);
         }
@@ -40,23 +47,24 @@ export default class CodexWrapper {
   }
 
   cleanup(sig) {
-    this.logger.info('Codex process exited, cleaning up...');
+    this.logger.info(`${this.agentName} process exited, cleaning up...`);
     this.clearTimer();
     try {
       process.stdin.setRawMode(false);
     } catch (e) {
       void e; // ignore
     }
-    if (sig && this.codex) {
-      this.codex.kill();
+    if (sig && this.agent) {
+      this.agent.kill();
     } else {
       process.exit(0);
     }
   }
 
-  async start(codexArgs = []) {
-    console.log('Starting codex...');
-    this.codex = pty.spawn('codex', codexArgs, {
+  async start(agentArgs = []) {
+    console.log(`Starting ${this.agentName}...`);
+
+    this.agent = pty.spawn(this.agentName, agentArgs, {
       name: 'xterm-color',
       cwd: process.cwd(),
       env: process.env,
@@ -64,18 +72,18 @@ export default class CodexWrapper {
       rows: process.stdout.rows || 24,
     });
 
-    // Mirror Codex output and track activity
-    this.codex.onData(data => {
+    // Mirror agent output and track activity
+    this.agent.onData(data => {
       process.stdout.write(data);
-      // New output implies Codex is actively working.
+      // New output implies agent is actively working.
       this.scheduleInactivityCheck();
     });
 
-    // Forward user input to Codex
+    // Forward user input to agent
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on('data', data => {
-      this.codex.write(data);
+      this.agent.write(data);
       // Consider Enter as submission, reset state to working.
       if (data[0] === 0x0d || data[0] === 0x0a) {
         this.logger.info('Submit detected, resetting state to working');
@@ -88,15 +96,18 @@ export default class CodexWrapper {
     });
 
     // Handle exit and signals
-    this.codex.onExit(() => this.cleanup(false));
+    this.agent.onExit(() => {
+      this.cleanup(false);
+      console.log(`${this.agentName} process exited, cleaning up...`);
+    });
     process.on('SIGINT', () => this.cleanup(true));
     process.on('SIGTERM', () => this.cleanup(true));
 
     // Keep PTY size in sync
     const resize = () => {
-      if (this.codex && this.codex.resize) {
+      if (this.agent && this.agent.resize) {
         const { columns, rows } = process.stdout;
-        this.codex.resize(columns || 80, rows || 24);
+        this.agent.resize(columns || 80, rows || 24);
       }
     };
     process.stdout.on('resize', resize);
