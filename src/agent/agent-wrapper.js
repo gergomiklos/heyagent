@@ -7,7 +7,7 @@ function createNotificationMessages(agentName) {
   const capitalizedName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
   return {
     title: `Hey, ${capitalizedName} is waiting for you!`,
-    message: `${capitalizedName} stopped`
+    message: `${capitalizedName} stopped`,
   };
 }
 
@@ -71,7 +71,6 @@ export default class AgentWrapper {
       cols: process.stdout.columns || 80,
       rows: process.stdout.rows || 24,
     });
-
 
     // Mirror agent output and track activity
     this.agent.onData(data => {
