@@ -2,6 +2,8 @@
 
 ### Get notified when Claude Code and Codex CLI need your attention!
 
+HeyAgent supports most of the CLI coding agents, use it for free!
+
 ## Installation
 
 Install globally via npm:
@@ -15,21 +17,29 @@ npm install -g heyagent
 1. Install the package globally
 2. Run `hey claude` to start Claude Code with notifications
 3. Or run `hey codex` to start OpenAI Codex CLI with notifications
+4. Or run `hey gemini/droid/...` to start any CLI agent with notifications
 
 ## Usage
 
 ### Basic Commands
 
 ```bash
-# Start Claude with notifications
+# Start Claude Code with notifications
 hey claude
 
-# Start Codex with notifications
+# Start Codex CLI with notifications
 hey codex
+
+# Start Gemini CLI with notifications
+hey gemini
+
+# Start basically any CLI coding agent with notifications!
+hey [YOUR-AGENT]
 
 # Pass arguments to Claude/Codex
 hey claude --help
 hey claude -c    # Continue last session
+hey codex resume --latest    # Continue last session
 
 # Configure notification settings
 hey config
@@ -81,14 +91,13 @@ HeyAgent wraps your Claude Code or Codex CLI session:
 
 ## Requirements
 
-- Node.js 18.0.0 or higher
+- Node.js 18 or higher
 - Claude Code CLI or OpenAI Codex CLI installed
-- Active Claude Code or OpenAI Codex CLI license
 - HeyAgent license for paid notification channels
 
 ## Support
 
-- Documentation: https://heyagent.dev
+- Official website: https://heyagent.dev
 - Issues: Report bugs and feature requests on GitHub
 
 ## License
