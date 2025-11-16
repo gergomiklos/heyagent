@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import Logger from '../logger.js';
+import { getClaudeConfigDir } from './claude-config.js';
 
 class HookSetup {
   constructor() {
@@ -16,7 +16,7 @@ class HookSetup {
 
   // Use global Claude settings file only
   getSettingsPath() {
-    return path.join(os.homedir(), '.claude', 'settings.json');
+    return path.join(getClaudeConfigDir(), 'settings.json');
   }
 
   loadSettings(settingsPath) {
