@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import Logger from '../logger.js';
+import { getClaudeConfigDir } from './claude-config.js';
 
 class SlashCommandSetup {
   constructor() {
@@ -10,8 +10,7 @@ class SlashCommandSetup {
 
   // Use global Claude commands directory only
   getCommandsPath() {
-    const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-    return path.join(claudeConfigDir, 'commands');
+    return path.join(getClaudeConfigDir(), 'commands');
   }
 
   // Create /hey slash command for toggling notifications
