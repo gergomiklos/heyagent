@@ -16,7 +16,8 @@ class HookSetup {
 
   // Use global Claude settings file only
   getSettingsPath() {
-    return path.join(os.homedir(), '.claude', 'settings.json');
+    const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    return path.join(claudeConfigDir, 'settings.json');
   }
 
   loadSettings(settingsPath) {

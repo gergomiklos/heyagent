@@ -10,7 +10,8 @@ class SlashCommandSetup {
 
   // Use global Claude commands directory only
   getCommandsPath() {
-    return path.join(os.homedir(), '.claude', 'commands');
+    const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    return path.join(claudeConfigDir, 'commands');
   }
 
   // Create /hey slash command for toggling notifications
