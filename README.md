@@ -72,8 +72,10 @@ Inside Telegram:
 
 - `/help` list commands
 - `/new` force next prompt to run as a new session
-- `/claude` switch active provider to Claude
-- `/codex` switch active provider to Codex
+- `/claude [session-id]` switch active provider to Claude, optionally binding a specific local session
+- `/codex [session-id]` switch active provider to Codex, optionally binding a specific local session
+- `/sessions [provider] [count]` list recent local sessions for Claude or Codex
+- `/use <n>` or `/use <provider> <n>` bind one of the sessions from the latest `/sessions` list
 - `/status` show provider, directory, bot, session, and pairing
 - `/stop` stop current execution and clear queued messages
 
@@ -89,8 +91,10 @@ When running in an interactive terminal, HeyAgent also accepts live local input.
 - `/say <text>` send raw message directly to Telegram
 - `/new` force next prompt to start a fresh session
 - `/stop` stop current execution and clear queued Telegram messages
-- `/claude` switch to Claude provider
-- `/codex` switch to Codex provider
+- `/claude [session-id]` switch to Claude, optionally binding a specific local session
+- `/codex [session-id]` switch to Codex, optionally binding a specific local session
+- `/sessions [provider] [count]` list recent local sessions
+- `/use <n>` or `/use <provider> <n>` bind one of the sessions from the latest list
 - `/status` print local bridge status
 - `/help` show local commands
 - `/exit` stop the running bridge
@@ -115,6 +119,27 @@ Session startup strategy:
 - `--session <session-id>` : resumes the session given by its id
 - default (no startup flag): same as `--resume` / `--continue`, resume latest in current provider/project
 
+## Session Selection
+
+HeyAgent can bind a provider to a specific local session after startup.
+
+Examples:
+
+```bash
+# List recent Claude sessions
+/sessions claude
+
+# Switch to the first listed Claude session
+/use claude 1
+
+# Bind a specific Codex session id directly
+/codex 019d2a28-4b23-74e2-a660-b7acde2dd541
+```
+
+When HeyAgent has local metadata for the selected session, it restores the provider using that
+session's recorded working directory. This is especially useful for Claude sessions, which are
+scoped to the original project directory.
+
 ## Notes
 
 - Fully local-served
@@ -127,6 +152,7 @@ Session startup strategy:
 - If you send new messages while a request is in progress, HeyAgent queues and groups those messages into the next run.
 - Telegram attachments are forwarded to the active provider (documents, images, audio, voice notes, and videos).
 - Config is stored at `~/.heyagent/config.json`
+- `/use` depends on the most recent `/sessions` result in the current running HeyAgent process.
 
 ## License
 
