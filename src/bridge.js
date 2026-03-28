@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,8 @@ const SETUP_MODE_PHONE = 'phone_onboarding';
 const SETUP_MODE_MANUAL = 'manual_fallback';
 const ATTACHMENT_DOWNLOAD_DIR = path.join(os.tmpdir(), 'heyagent-files');
 const DICTATION_HINT_TEXT = 'Hint: for voice input, use your phone keyboard dictation.';
+const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const CODEX_ARCHIVE_DIR = path.join(os.homedir(), '.codex', 'archived_sessions');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -128,6 +131,297 @@ function toLogPreview(text) {
   return `${singleLine.slice(0, 239)}…`;
 }
 
+function shortenSessionId(sessionId) {
+  const normalized = String(sessionId || '').trim();
+  if (!normalized) {
+    return '-';
+  }
+  return normalized.slice(0, 8);
+}
+
+function formatSessionTimestamp(timestamp) {
+  const value = String(timestamp || '').trim();
+  if (!value) {
+    return 'unknown time';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const hours = String(parsed.getHours()).padStart(2, '0');
+  const minutes = String(parsed.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
+function truncateSessionPreview(text, maxLength = 100) {
+  const normalized = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function extractTextParts(content) {
+  if (typeof content === 'string') {
+    return [content];
+  }
+
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  const parts = [];
+  for (const block of content) {
+    if (typeof block === 'string') {
+      parts.push(block);
+      continue;
+    }
+
+    if (!block || typeof block !== 'object') {
+      continue;
+    }
+
+    if (typeof block.text === 'string' && block.text.trim()) {
+      parts.push(block.text);
+      continue;
+    }
+
+    if (typeof block.content === 'string' && block.content.trim()) {
+      parts.push(block.content);
+    }
+  }
+
+  return parts;
+}
+
+function firstMeaningfulText(parts, predicate = null) {
+  for (const candidate of extractTextParts(parts)) {
+    const normalized = String(candidate || '').trim();
+    if (!normalized) {
+      continue;
+    }
+
+    if (predicate && !predicate(normalized)) {
+      continue;
+    }
+
+    return normalized;
+  }
+
+  return '';
+}
+
+function isCodexSystemText(text) {
+  return (
+    text.startsWith('# AGENTS.md instructions') ||
+    text.startsWith('<environment_context>') ||
+    text.startsWith('<permissions instructions>') ||
+    text.startsWith('<app-context>') ||
+    text.startsWith('<collaboration_mode>') ||
+    text.startsWith('<skills_instructions>')
+  );
+}
+
+function collectJsonlFiles(dirPath, results = []) {
+  if (!fs.existsSync(dirPath)) {
+    return results;
+  }
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      collectJsonlFiles(fullPath, results);
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      results.push(fullPath);
+    }
+  }
+
+  return results;
+}
+
+function getFileMtime(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function readJsonl(filePath) {
+  try {
+    return fs
+      .readFileSync(filePath, 'utf8')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function parseClaudeSessionFile(filePath) {
+  const lines = readJsonl(filePath);
+  const fallbackTimestamp = new Date(getFileMtime(filePath)).toISOString();
+  const record = {
+    id: path.basename(filePath, '.jsonl'),
+    provider: 'claude',
+    cwd: '',
+    timestamp: fallbackTimestamp,
+    preview: '',
+  };
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      if (!record.cwd && typeof entry.cwd === 'string' && entry.cwd.trim()) {
+        record.cwd = entry.cwd.trim();
+      }
+      if ((!record.timestamp || record.timestamp === fallbackTimestamp) && typeof entry.timestamp === 'string' && entry.timestamp.trim()) {
+        record.timestamp = entry.timestamp.trim();
+      }
+
+      const message = entry.message;
+      if (!record.preview && message && message.role === 'user') {
+        record.preview = firstMeaningfulText(message.content);
+      }
+
+      if (record.cwd && record.preview) {
+        break;
+      }
+    } catch {
+      // Ignore malformed lines.
+    }
+  }
+
+  if (!record.preview) {
+    record.preview = path.basename(record.cwd || filePath);
+  }
+
+  return record;
+}
+
+function parseCodexSessionFile(filePath) {
+  const lines = readJsonl(filePath);
+  const fallbackTimestamp = new Date(getFileMtime(filePath)).toISOString();
+  const record = {
+    id: path.basename(filePath, '.jsonl'),
+    provider: 'codex',
+    cwd: '',
+    timestamp: fallbackTimestamp,
+    preview: '',
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    try {
+      const entry = JSON.parse(lines[index]);
+
+      if (entry.type === 'session_meta' && entry.payload && typeof entry.payload === 'object') {
+        if (typeof entry.payload.id === 'string' && entry.payload.id.trim()) {
+          record.id = entry.payload.id.trim();
+        }
+        if (!record.cwd && typeof entry.payload.cwd === 'string' && entry.payload.cwd.trim()) {
+          record.cwd = entry.payload.cwd.trim();
+        }
+        if (
+          (!record.timestamp || record.timestamp === fallbackTimestamp) &&
+          typeof entry.payload.timestamp === 'string' &&
+          entry.payload.timestamp.trim()
+        ) {
+          record.timestamp = entry.payload.timestamp.trim();
+        }
+        continue;
+      }
+
+      if (!record.preview && entry.type === 'response_item' && entry.payload && entry.payload.type === 'message' && entry.payload.role === 'user') {
+        record.preview = firstMeaningfulText(entry.payload.content, text => !isCodexSystemText(text));
+      }
+
+      if (record.cwd && record.preview) {
+        break;
+      }
+    } catch {
+      // Ignore malformed lines.
+    }
+  }
+
+  if (!record.preview) {
+    record.preview = path.basename(record.cwd || filePath);
+  }
+
+  return record;
+}
+
+function loadRecentSessionRecords(provider, limit = 8) {
+  const normalizedLimit = Math.max(1, Math.min(20, Number(limit) || 8));
+  const sessionFiles = provider === 'claude' ? collectJsonlFiles(CLAUDE_PROJECTS_DIR) : collectJsonlFiles(CODEX_ARCHIVE_DIR);
+
+  const sortedFiles = [...sessionFiles].sort((left, right) => getFileMtime(right) - getFileMtime(left)).slice(0, normalizedLimit * 4);
+
+  const records = [];
+  const seen = new Set();
+  for (const filePath of sortedFiles) {
+    const record = provider === 'claude' ? parseClaudeSessionFile(filePath) : parseCodexSessionFile(filePath);
+    if (!record.id || seen.has(record.id)) {
+      continue;
+    }
+    seen.add(record.id);
+    records.push(record);
+    if (records.length >= normalizedLimit) {
+      break;
+    }
+  }
+
+  return records;
+}
+
+function resolveSessionRecord(provider, sessionId) {
+  const normalizedSessionId = String(sessionId || '').trim();
+  if (!normalizedSessionId) {
+    return null;
+  }
+
+  if (provider === 'claude') {
+    const files = collectJsonlFiles(CLAUDE_PROJECTS_DIR);
+    for (const filePath of files) {
+      if (path.basename(filePath, '.jsonl') !== normalizedSessionId) {
+        continue;
+      }
+      return parseClaudeSessionFile(filePath);
+    }
+    return null;
+  }
+
+  const files = collectJsonlFiles(CODEX_ARCHIVE_DIR);
+  for (const filePath of files) {
+    if (!path.basename(filePath).includes(normalizedSessionId)) {
+      continue;
+    }
+    const record = parseCodexSessionFile(filePath);
+    if (record.id === normalizedSessionId) {
+      return record;
+    }
+  }
+
+  return null;
+}
+
 class Bridge {
   constructor(config, provider, providerArgs = [], options = {}) {
     this.config = config;
@@ -149,6 +443,10 @@ class Bridge {
     this.activePromptAbortReason = null;
     this.telegramPendingMessages = [];
     this.telegramDispatchScheduled = false;
+    this.sessionChoices = {
+      claude: [],
+      codex: [],
+    };
 
     this.onSignal = () => {
       this.requestStopCurrentPrompt('shutdown');
@@ -237,6 +535,10 @@ class Bridge {
     return getCurrentSessionId(this.config, this.provider);
   }
 
+  getBoundSessionIdForProvider(provider) {
+    return getCurrentSessionId(this.config, provider);
+  }
+
   setBoundSessionId(sessionId) {
     const normalized = String(sessionId || '').trim() || null;
     if (this.provider === 'codex') {
@@ -244,6 +546,17 @@ class Bridge {
       return;
     }
     if (this.provider === 'claude') {
+      this.config.set('claudeLastSessionId', normalized);
+    }
+  }
+
+  setBoundSessionIdForProvider(provider, sessionId) {
+    const normalized = String(sessionId || '').trim() || null;
+    if (provider === 'codex') {
+      this.config.set('codexLastSessionId', normalized);
+      return;
+    }
+    if (provider === 'claude') {
       this.config.set('claudeLastSessionId', normalized);
     }
   }
@@ -269,24 +582,181 @@ class Bridge {
 
   async handleProviderSwitchCommand(provider, rawArgs = '', source = 'telegram') {
     const sourceLabel = source === 'cli' ? 'CLI' : 'Telegram';
-    const args = splitArgs(rawArgs);
+    const selectedSessionId = String(rawArgs || '').trim() || null;
     const effective = this.switchProvider(provider);
+    if (selectedSessionId) {
+      this.setBoundSessionIdForProvider(provider, selectedSessionId);
+      this.forceNewNextPrompt = false;
+    }
     const sessionId = this.getBoundSessionId() || '-';
+    const sessionRecord = selectedSessionId ? resolveSessionRecord(provider, sessionId) : null;
     const argsText = effective.providerArgs.length > 0 ? effective.providerArgs.join(' ') : '(none)';
 
-    this.logCliEvent(`${sourceLabel} provider switch`, provider);
+    this.logCliEvent(`${sourceLabel} provider switch`, selectedSessionId ? `${provider} (${selectedSessionId})` : provider);
 
     await this.safeSendMessage(
       [
         `Provider switched to ${provider}.`,
         `Session: ${sessionId}`,
+        sessionRecord?.cwd ? `Session directory: ${sessionRecord.cwd}` : null,
         `Args: ${argsText}`,
-        args.length > 0 ? 'Inline switch args are ignored. Use startup args to set defaults.' : null,
+        selectedSessionId ? 'Explicit session binding updated.' : null,
+        selectedSessionId && !sessionRecord ? 'Session metadata not found locally. Direct resume will still be attempted.' : null,
         effective.defaultBypassApplied ? 'Default bypass mode applied.' : null,
       ]
         .filter(Boolean)
         .join('\n')
     );
+  }
+
+  buildRuntimeStatusText() {
+    const lines = [buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState)];
+    const sessionRecord = resolveSessionRecord(this.provider, this.getBoundSessionId());
+    if (sessionRecord?.cwd) {
+      lines.push(`Session directory: ${sessionRecord.cwd}`);
+    }
+    return lines.join('\n');
+  }
+
+  parseSessionListArguments(rawArgs = '') {
+    const parts = splitArgs(rawArgs);
+    let provider = this.provider;
+    let limit = 8;
+
+    if (parts[0] === 'claude' || parts[0] === 'codex') {
+      provider = parts.shift();
+    }
+
+    if (parts[0]) {
+      const parsed = Number.parseInt(parts[0], 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        limit = parsed;
+      }
+    }
+
+    return { provider, limit };
+  }
+
+  formatSessionListText(provider, sessions) {
+    const lines = [`Recent ${formatProviderName(provider)} sessions:`];
+
+    if (sessions.length === 0) {
+      lines.push('No local sessions found.');
+      return lines.join('\n');
+    }
+
+    for (const [index, session] of sessions.entries()) {
+      lines.push(`${index + 1}. ${shortenSessionId(session.id)} | ${formatSessionTimestamp(session.timestamp)}`);
+      if (session.cwd) {
+        lines.push(`Dir: ${session.cwd}`);
+      }
+      if (session.preview) {
+        lines.push(`Summary: ${truncateSessionPreview(session.preview, 120)}`);
+      }
+      lines.push(`Bind: /${provider} ${session.id}`);
+      lines.push('');
+    }
+
+    lines.push(
+      provider === this.provider ? 'Use /use <n> to bind one of the sessions above.' : `Use /use ${provider} <n> to bind one of the sessions above.`
+    );
+    return lines.join('\n').trim();
+  }
+
+  async handleSessionsCommand(rawArgs = '', source = 'telegram') {
+    const { provider, limit } = this.parseSessionListArguments(rawArgs);
+    const sessions = loadRecentSessionRecords(provider, limit);
+    this.sessionChoices[provider] = sessions;
+    this.logCliEvent(source === 'cli' ? 'CLI sessions list' : 'Telegram sessions list', `${provider} (${sessions.length})`);
+
+    const text = this.formatSessionListText(provider, sessions);
+    if (source === 'cli') {
+      this.writeCliLine(text);
+      return;
+    }
+
+    await this.safeSendMessage(text);
+  }
+
+  parseUseArguments(rawArgs = '') {
+    const parts = splitArgs(rawArgs);
+    if (parts.length === 0) {
+      return { provider: this.provider, index: null };
+    }
+
+    let provider = this.provider;
+    let indexToken = parts[0];
+
+    if (parts[0] === 'claude' || parts[0] === 'codex') {
+      provider = parts[0];
+      indexToken = parts[1];
+    }
+
+    const index = Number.parseInt(indexToken, 10);
+    return {
+      provider,
+      index: Number.isFinite(index) && index > 0 ? index : null,
+    };
+  }
+
+  async handleUseCommand(rawArgs = '', source = 'telegram') {
+    const sourceLabel = source === 'cli' ? 'CLI' : 'Telegram';
+    const { provider, index } = this.parseUseArguments(rawArgs);
+
+    if (!index) {
+      const usage = 'Usage: /use <n> or /use <provider> <n>. Run /sessions first.';
+      if (source === 'cli') {
+        this.writeCliLine(usage);
+      } else {
+        await this.safeSendMessage(usage);
+      }
+      return;
+    }
+
+    const choices = Array.isArray(this.sessionChoices[provider]) ? this.sessionChoices[provider] : [];
+    if (choices.length === 0) {
+      const message = `No cached ${provider} session list. Run /sessions ${provider} first.`;
+      if (source === 'cli') {
+        this.writeCliLine(message);
+      } else {
+        await this.safeSendMessage(message);
+      }
+      return;
+    }
+
+    const session = choices[index - 1];
+    if (!session) {
+      const message = `Session index ${index} is out of range for ${provider}.`;
+      if (source === 'cli') {
+        this.writeCliLine(message);
+      } else {
+        await this.safeSendMessage(message);
+      }
+      return;
+    }
+
+    const effective = this.switchProvider(provider);
+    this.setBoundSessionIdForProvider(provider, session.id);
+    this.forceNewNextPrompt = false;
+    this.logCliEvent(`${sourceLabel} session bind`, `${provider} #${index} (${session.id})`);
+
+    const text = [
+      `Provider switched to ${provider}.`,
+      `Session: ${session.id}`,
+      session.cwd ? `Session directory: ${session.cwd}` : null,
+      session.preview ? `Summary: ${truncateSessionPreview(session.preview, 120)}` : null,
+      `Args: ${effective.providerArgs.length > 0 ? effective.providerArgs.join(' ') : '(none)'}`,
+      'Explicit session binding updated.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (source === 'cli') {
+      this.writeCliLine(text);
+      return;
+    }
+
+    await this.safeSendMessage(text);
   }
 
   startLocalInputLoop() {
@@ -361,8 +831,10 @@ class Bridge {
           '/status - show current status',
           '/new - reset session (next prompt starts fresh)',
           '/stop - stop current execution and clear queued Telegram messages',
-          '/claude - switch to Claude provider',
-          '/codex - switch to Codex provider',
+          '/claude [session-id] - switch to Claude, optionally bind a specific session',
+          '/codex [session-id] - switch to Codex, optionally bind a specific session',
+          '/sessions [provider] [count] - list recent local sessions',
+          '/use <n> or /use <provider> <n> - bind a listed session',
           '/say <text> - send a raw message to Telegram',
           '/ask <prompt> - run prompt through provider and send response to Telegram',
           '/exit - stop HeyAgent',
@@ -374,7 +846,7 @@ class Bridge {
     }
 
     if (line === '/status') {
-      this.writeCliLine(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState));
+      this.writeCliLine(this.buildRuntimeStatusText());
       return;
     }
 
@@ -395,6 +867,18 @@ class Bridge {
       } else {
         this.writeCliLine('No active request to stop.');
       }
+      return;
+    }
+
+    if (line === '/sessions' || line.startsWith('/sessions ')) {
+      const argument = line.slice('/sessions'.length).trim();
+      await this.handleSessionsCommand(argument, 'cli');
+      return;
+    }
+
+    if (line === '/use' || line.startsWith('/use ')) {
+      const argument = line.slice('/use'.length).trim();
+      await this.handleUseCommand(argument, 'cli');
       return;
     }
 
@@ -1013,8 +1497,10 @@ class Bridge {
           '/help - show command list',
           '/new - start a fresh session',
           '/stop - stop current execution and clear queued messages',
-          '/claude - switch to Claude provider',
-          '/codex - switch to Codex provider',
+          '/claude [session-id] - switch to Claude, optionally bind a specific session',
+          '/codex [session-id] - switch to Codex, optionally bind a specific session',
+          '/sessions [provider] [count] - list recent local sessions',
+          '/use <n> or /use <provider> <n> - bind a listed session',
           '/status - show current status',
           '',
           `Send any normal message to talk to ${this.provider}.`,
@@ -1041,7 +1527,17 @@ class Bridge {
     }
 
     if (command === '/status') {
-      await this.safeSendMessage(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState));
+      await this.safeSendMessage(this.buildRuntimeStatusText());
+      return;
+    }
+
+    if (command === '/sessions') {
+      await this.handleSessionsCommand(argument, 'telegram');
+      return;
+    }
+
+    if (command === '/use') {
+      await this.handleUseCommand(argument, 'telegram');
       return;
     }
 
@@ -1066,12 +1562,14 @@ class Bridge {
     const abortSignal = options.abortSignal || null;
 
     if (this.provider === 'claude') {
+      const sessionId = this.config.claudeLastSessionId;
+      const sessionRecord = resolveSessionRecord('claude', sessionId);
       return runClaudePrompt(prompt, {
         resume,
         extraArgs: this.providerArgs,
-        cwd: process.cwd(),
+        cwd: sessionRecord?.cwd || process.cwd(),
         abortSignal,
-        sessionId: this.config.claudeLastSessionId,
+        sessionId,
         onSessionId: sessionId => {
           this.setBoundSessionId(sessionId);
         },
@@ -1079,12 +1577,14 @@ class Bridge {
     }
 
     if (this.provider === 'codex') {
+      const sessionId = this.config.codexLastSessionId;
+      const sessionRecord = resolveSessionRecord('codex', sessionId);
       return runCodexPrompt(prompt, {
         resume,
         extraArgs: this.providerArgs,
-        cwd: process.cwd(),
+        cwd: sessionRecord?.cwd || process.cwd(),
         abortSignal,
-        sessionId: this.config.codexLastSessionId,
+        sessionId,
         onSessionId: sessionId => {
           this.setBoundSessionId(sessionId);
         },
