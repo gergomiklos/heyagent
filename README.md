@@ -79,6 +79,8 @@ Inside Telegram:
 
 Any other text message is forwarded to the active agent.
 For voice input, keyboard dictation on your phone is recommended.
+While a provider is running, HeyAgent uses Telegram's native `typing...` status instead of sending a separate "is working" message.
+When a provider response includes obvious short choices such as `- **Delete**: d`, HeyAgent shows a Telegram reply keyboard and maps the selected label back to the expected value.
 
 ## Local CLI Input
 

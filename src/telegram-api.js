@@ -9,6 +9,14 @@ function normalizeText(value) {
   return text || 'No response.';
 }
 
+function normalizeReplyMarkup(replyMarkup) {
+  if (!replyMarkup || typeof replyMarkup !== 'object') {
+    return null;
+  }
+
+  return replyMarkup;
+}
+
 function splitMessage(text) {
   const normalized = normalizeText(text);
   if (normalized.length <= MAX_MESSAGE_CHUNK_SIZE) {
@@ -233,7 +241,8 @@ class TelegramApi {
     }
   }
 
-  async sendMessage(chatId, text) {
+  async sendMessage(chatId, text, options = {}) {
+    const replyMarkup = normalizeReplyMarkup(options.replyMarkup);
     const targetChatId = String(chatId || '').trim();
     if (!targetChatId) {
       throw new TelegramApiError('Missing Telegram chat ID');
@@ -241,11 +250,27 @@ class TelegramApi {
 
     const chunks = splitMessage(text);
     try {
-      for (const chunk of chunks) {
-        await this.bot.sendMessage(targetChatId, chunk);
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index];
+        const sendOptions = replyMarkup && index === chunks.length - 1 ? { reply_markup: replyMarkup } : undefined;
+        await this.bot.sendMessage(targetChatId, chunk, sendOptions);
       }
     } catch (error) {
       throw toTelegramError(error, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendChatAction(chatId, action = 'typing') {
+    const targetChatId = String(chatId || '').trim();
+    const normalizedAction = String(action || '').trim() || 'typing';
+    if (!targetChatId) {
+      throw new TelegramApiError('Missing Telegram chat ID');
+    }
+
+    try {
+      await this.bot.sendChatAction(targetChatId, normalizedAction);
+    } catch (error) {
+      throw toTelegramError(error, 'Failed to send Telegram chat action');
     }
   }
 
