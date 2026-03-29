@@ -20,6 +20,7 @@ const SETUP_MODE_PHONE = 'phone_onboarding';
 const SETUP_MODE_MANUAL = 'manual_fallback';
 const ATTACHMENT_DOWNLOAD_DIR = path.join(os.tmpdir(), 'heyagent-files');
 const DICTATION_HINT_TEXT = 'Hint: for voice input, use your phone keyboard dictation.';
+const TYPING_HEARTBEAT_MS = 4000;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -128,6 +129,70 @@ function toLogPreview(text) {
   return `${singleLine.slice(0, 239)}…`;
 }
 
+function extractReplyChoices(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n');
+  if (!normalized) {
+    return [];
+  }
+
+  const choices = [];
+  const seen = new Set();
+  const lines = normalized.split('\n');
+  const patterns = [/^\s*[-*]\s*\*\*(.+?)\*\*:\s*(\S+)\s*$/u, /^\s*[-*]\s*(.+?)\s*:\s*(\S+)\s*$/u];
+
+  const sanitizeChoicePart = value =>
+    String(value || '')
+      .replace(/\*+/g, '')
+      .replace(/^`+|`+$/g, '')
+      .replace(/^"+|"+$/g, '')
+      .replace(/^'+|'+$/g, '')
+      .trim();
+
+  for (const line of lines) {
+    for (const pattern of patterns) {
+      const match = line.match(pattern);
+      if (!match) {
+        continue;
+      }
+
+      const label = sanitizeChoicePart(match[1]);
+      const value = sanitizeChoicePart(match[2]);
+      if (!label || !value) {
+        continue;
+      }
+
+      const key = `${label}::${value}`;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      choices.push({ label, value });
+      break;
+    }
+  }
+
+  return choices.slice(0, 8);
+}
+
+function buildReplyKeyboardMarkup(choices) {
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return null;
+  }
+
+  const keyboard = [];
+  for (let index = 0; index < choices.length; index += 3) {
+    keyboard.push(choices.slice(index, index + 3).map(choice => ({ text: choice.label })));
+  }
+
+  return {
+    keyboard,
+    resize_keyboard: true,
+    one_time_keyboard: true,
+    input_field_placeholder: 'Choose an option',
+  };
+}
+
 class Bridge {
   constructor(config, provider, providerArgs = [], options = {}) {
     this.config = config;
@@ -149,6 +214,9 @@ class Bridge {
     this.activePromptAbortReason = null;
     this.telegramPendingMessages = [];
     this.telegramDispatchScheduled = false;
+    this.telegramTypingTimer = null;
+    this.replyKeyboardVisible = false;
+    this.pendingReplyChoices = [];
 
     this.onSignal = () => {
       this.requestStopCurrentPrompt('shutdown');
@@ -246,6 +314,76 @@ class Bridge {
     if (this.provider === 'claude') {
       this.config.set('claudeLastSessionId', normalized);
     }
+  }
+
+  startTypingIndicator() {
+    const chatId = this.config.telegramChatId;
+    if (!chatId || this.telegramTypingTimer) {
+      return;
+    }
+
+    const tick = async () => {
+      try {
+        await this.telegram.sendChatAction(chatId, 'typing');
+      } catch (error) {
+        this.logger.warn(`Typing indicator failed: ${error.message}`);
+      }
+    };
+
+    void tick();
+    this.telegramTypingTimer = setInterval(() => {
+      void tick();
+    }, TYPING_HEARTBEAT_MS);
+  }
+
+  stopTypingIndicator() {
+    if (!this.telegramTypingTimer) {
+      return;
+    }
+
+    clearInterval(this.telegramTypingTimer);
+    this.telegramTypingTimer = null;
+  }
+
+  clearPendingReplyChoices() {
+    this.pendingReplyChoices = [];
+  }
+
+  buildReplyMarkupForText(text, explicitReplyMarkup = undefined) {
+    if (explicitReplyMarkup) {
+      return explicitReplyMarkup;
+    }
+
+    const choices = extractReplyChoices(text);
+    if (choices.length > 0) {
+      this.pendingReplyChoices = choices;
+      this.replyKeyboardVisible = true;
+      return buildReplyKeyboardMarkup(choices);
+    }
+
+    this.clearPendingReplyChoices();
+    if (this.replyKeyboardVisible) {
+      this.replyKeyboardVisible = false;
+      return { remove_keyboard: true };
+    }
+
+    return null;
+  }
+
+  normalizeTelegramUserReply(text) {
+    const normalized = String(text || '').trim();
+    if (!normalized || this.pendingReplyChoices.length === 0) {
+      return normalized;
+    }
+
+    const matchedChoice = this.pendingReplyChoices.find(choice => choice.label === normalized || choice.value === normalized);
+    if (!matchedChoice) {
+      return normalized;
+    }
+
+    this.clearPendingReplyChoices();
+    this.replyKeyboardVisible = false;
+    return matchedChoice.value;
   }
 
   switchProvider(provider) {
@@ -731,7 +869,7 @@ class Bridge {
     this.startTelegramDispatch(false);
   }
 
-  async queuePrompt(prompt, source, options = {}) {
+  async queuePrompt(prompt, source) {
     const cleanPrompt = String(prompt || '').trim();
     if (!cleanPrompt) {
       return;
@@ -742,7 +880,6 @@ class Bridge {
       const providerLabel = formatProviderName(this.provider);
       const resume = !this.forceNewNextPrompt;
       const abortController = new globalThis.AbortController();
-      const groupedCount = Number.isFinite(options.groupedCount) ? Math.max(1, Number(options.groupedCount)) : 1;
       this.logCliEvent(`${sourceLabel} -> ${providerLabel}`, cleanPrompt);
       this.activePromptAbortController = abortController;
       this.activePromptSource = source;
@@ -750,11 +887,7 @@ class Bridge {
 
       try {
         if (source === 'telegram') {
-          if (groupedCount > 1) {
-            await this.safeSendMessage(`${providerLabel} is working on ${groupedCount} messages...`);
-          } else {
-            await this.safeSendMessage(`${providerLabel} is working...`);
-          }
+          this.startTypingIndicator();
         }
 
         const response = await this.runProvider(cleanPrompt, resume, {
@@ -771,6 +904,10 @@ class Bridge {
         await this.safeSendMessage(`Error: ${error.message}`);
         this.logger.error(`Provider execution failed: ${error.message}`);
       } finally {
+        if (source === 'telegram') {
+          this.stopTypingIndicator();
+        }
+
         if (this.activePromptAbortController === abortController) {
           this.activePromptAbortController = null;
           this.activePromptSource = null;
@@ -928,7 +1065,7 @@ class Bridge {
   }
 
   async handleMessage(rawText) {
-    const text = String(rawText || '').trim();
+    const text = this.normalizeTelegramUserReply(rawText);
     if (!text) {
       return;
     }
@@ -1105,7 +1242,8 @@ class Bridge {
     this.logCliEvent(`${from} -> Telegram`, text);
 
     try {
-      await this.telegram.sendMessage(chatId, text);
+      const replyMarkup = this.buildReplyMarkupForText(text, options.replyMarkup);
+      await this.telegram.sendMessage(chatId, text, { replyMarkup });
     } catch (error) {
       this.logger.error(`Outbox send failed: ${error.message}`);
 
