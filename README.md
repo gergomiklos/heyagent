@@ -74,11 +74,62 @@ Inside Telegram:
 - `/new` force next prompt to run as a new session
 - `/claude` switch active provider to Claude
 - `/codex` switch active provider to Codex
+- `/transcription on|off|status` control local Whisper transcription for Telegram voice/audio messages
 - `/status` show provider, directory, bot, session, and pairing
 - `/stop` stop current execution and clear queued messages
 
 Any other text message is forwarded to the active agent.
-For voice input, keyboard dictation on your phone is recommended.
+When Kokoro TTS is available, agent replies include a **Build audio** button that generates an audio file on demand.
+
+Audio and voice notes are forwarded as attachments by default. Enable local transcription with `/transcription on`, or send a voice/audio message with caption `/transcription` to transcribe it once without sending it to the agent.
+
+## Voice and Audio
+
+### Kokoro TTS
+
+HeyAgent can build response audio locally with Kokoro TTS. Kokoro currently requires Python `>=3.10,<3.13`; HeyAgent checks `HEYAGENT_KOKORO_PYTHON`, then `python3.12`, `python3.11`, `python3.10`, and finally `python3`.
+
+Install the Python dependencies first:
+
+```bash
+python3.12 -m pip install 'kokoro>=0.9.4' soundfile numpy
+```
+
+Kokoro may also require `espeak-ng` for phonemization:
+
+```bash
+brew install espeak-ng
+```
+
+Optional environment variables:
+
+- `HEYAGENT_KOKORO_PYTHON` path to the Python interpreter
+- `HEYAGENT_KOKORO_VOICE` Kokoro voice, default `af_heart`
+- `HEYAGENT_KOKORO_LANG` Kokoro language code, default `a`
+- `HEYAGENT_KOKORO_SPEED` speech speed, default `1`
+- `HEYAGENT_TTS_MAX_CHARS` maximum response characters used for one audio build, default `6000`
+
+### Local Whisper Transcription
+
+Voice transcription uses `ffmpeg` plus `whisper-cli` from whisper.cpp.
+
+```bash
+brew install ffmpeg whisper-cpp
+```
+
+Then enable it in Telegram:
+
+```text
+/transcription on
+```
+
+Optional environment variables:
+
+- `HEYAGENT_FFMPEG_PATH` path to `ffmpeg`
+- `HEYAGENT_WHISPER_CLI_PATH` path to `whisper-cli`
+- `HEYAGENT_WHISPER_MODEL` path to a local whisper.cpp model
+
+If no model path is set, HeyAgent downloads `ggml-base.en.bin` into `~/.heyagent/models` on the first voice note.
 
 ## Local CLI Input
 

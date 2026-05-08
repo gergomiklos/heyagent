@@ -1,6 +1,9 @@
 import js from '@eslint/js';
 
 export default [
+  {
+    ignores: ['node_modules/**', '.venv*/**', 'tmp/**'],
+  },
   js.configs.recommended,
   {
     languageOptions: {
@@ -28,6 +31,5 @@ export default [
       'prefer-const': 'error',
       'no-var': 'error',
     },
-    ignores: ['node_modules/**', 'tmp/**'],
   },
 ];

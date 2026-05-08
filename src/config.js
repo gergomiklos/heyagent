@@ -16,6 +16,7 @@ class Config {
       telegramChatId: null,
       telegramChatUserId: null,
       telegramUpdateCursor: 0,
+      voiceTranscriptionEnabled: false,
       claudeLastSessionId: null,
       codexLastSessionId: null,
     };
@@ -95,6 +96,10 @@ class Config {
 
   get telegramUpdateCursor() {
     return this._data.telegramUpdateCursor ?? this.defaults.telegramUpdateCursor;
+  }
+
+  get voiceTranscriptionEnabled() {
+    return Boolean(this._data.voiceTranscriptionEnabled ?? this.defaults.voiceTranscriptionEnabled);
   }
 
   get codexLastSessionId() {

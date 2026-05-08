@@ -172,6 +172,27 @@ function normalizeMessage(update) {
   };
 }
 
+function normalizeCallback(update) {
+  const callback = update?.callback_query;
+  if (!callback) {
+    return null;
+  }
+
+  const data = typeof callback.data === 'string' ? callback.data.trim() : '';
+  if (!data) {
+    return null;
+  }
+
+  return {
+    updateId: Number.isInteger(update.update_id) ? update.update_id : null,
+    callbackQueryId: typeof callback.id === 'string' ? callback.id : null,
+    messageId: Number.isInteger(callback.message?.message_id) ? callback.message.message_id : null,
+    chatId: callback.message?.chat?.id === undefined || callback.message?.chat?.id === null ? null : String(callback.message.chat.id),
+    userId: callback.from?.id === undefined || callback.from?.id === null ? null : String(callback.from.id),
+    data,
+  };
+}
+
 class TelegramApi {
   constructor(token) {
     this.token = token;
@@ -204,7 +225,7 @@ class TelegramApi {
   async getUpdates(cursor, timeout = 20) {
     const opts = {
       timeout: Number.isFinite(timeout) ? Math.max(1, Math.min(50, timeout)) : 20,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
     };
 
     if (Number.isFinite(cursor) && cursor >= 0) {
@@ -215,6 +236,7 @@ class TelegramApi {
       const updates = await this.bot.getUpdates(opts);
       let nextCursor = Number.isFinite(cursor) ? cursor : 0;
       const messages = [];
+      const callbacks = [];
 
       for (const update of updates) {
         if (Number.isInteger(update.update_id) && update.update_id > nextCursor) {
@@ -225,15 +247,20 @@ class TelegramApi {
         if (normalized) {
           messages.push(normalized);
         }
+
+        const callback = normalizeCallback(update);
+        if (callback) {
+          callbacks.push(callback);
+        }
       }
 
-      return { messages, nextCursor };
+      return { messages, callbacks, nextCursor };
     } catch (error) {
       throw toTelegramError(error, 'Failed to poll Telegram updates');
     }
   }
 
-  async sendMessage(chatId, text) {
+  async sendMessage(chatId, text, options = {}) {
     const targetChatId = String(chatId || '').trim();
     if (!targetChatId) {
       throw new TelegramApiError('Missing Telegram chat ID');
@@ -241,11 +268,47 @@ class TelegramApi {
 
     const chunks = splitMessage(text);
     try {
-      for (const chunk of chunks) {
-        await this.bot.sendMessage(targetChatId, chunk);
+      const sentMessages = [];
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index];
+        const isLastChunk = index === chunks.length - 1;
+        const messageOptions = isLastChunk ? options : {};
+        sentMessages.push(await this.bot.sendMessage(targetChatId, chunk, messageOptions));
       }
+      return sentMessages;
     } catch (error) {
       throw toTelegramError(error, 'Failed to send Telegram message');
+    }
+  }
+
+  async answerCallbackQuery(callbackQueryId, options = {}) {
+    const normalizedId = String(callbackQueryId || '').trim();
+    if (!normalizedId) {
+      return;
+    }
+
+    try {
+      await this.bot.answerCallbackQuery(normalizedId, options);
+    } catch (error) {
+      throw toTelegramError(error, 'Failed to answer Telegram callback query');
+    }
+  }
+
+  async sendAudio(chatId, filePath, options = {}) {
+    const targetChatId = String(chatId || '').trim();
+    if (!targetChatId) {
+      throw new TelegramApiError('Missing Telegram chat ID');
+    }
+
+    const normalizedFilePath = String(filePath || '').trim();
+    if (!normalizedFilePath) {
+      throw new TelegramApiError('Missing audio file path');
+    }
+
+    try {
+      return await this.bot.sendAudio(targetChatId, normalizedFilePath, options);
+    } catch (error) {
+      throw toTelegramError(error, 'Failed to send Telegram audio');
     }
   }
 

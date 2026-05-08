@@ -14,12 +14,16 @@ import { runClaudePrompt } from './providers/claude-provider.js';
 import { runCodexPrompt } from './providers/codex-provider.js';
 import { applyDefaultBypassArgs } from './args.js';
 import { formatSleepInhibitorStatus, startSleepInhibitor } from './sleep-inhibitor.js';
+import { createVoiceTranscriber, formatVoiceTranscriberStatus } from './voice-transcriber.js';
+import { createKokoroTts, formatKokoroTtsStatus } from './kokoro-tts.js';
 
 const BOTFATHER_URL = 'https://t.me/BotFather';
 const SETUP_MODE_PHONE = 'phone_onboarding';
 const SETUP_MODE_MANUAL = 'manual_fallback';
 const ATTACHMENT_DOWNLOAD_DIR = path.join(os.tmpdir(), 'heyagent-files');
-const DICTATION_HINT_TEXT = 'Hint: for voice input, use your phone keyboard dictation.';
+const DICTATION_HINT_TEXT = 'Hint: use /transcription on for local voice transcription, or use phone keyboard dictation.';
+const TTS_CALLBACK_PREFIX = 'tts:';
+const MAX_TTS_RESPONSE_CACHE_SIZE = 30;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -74,15 +78,18 @@ function makePairCode() {
   }
 }
 
-function buildStatusText(config, provider, providerArgs = [], sleepInhibitorState = null) {
+function buildStatusText(config, provider, providerArgs = [], sleepInhibitorState = null, voiceTranscriber = null, kokoroTts = null) {
   const bot = config.telegramBotUsername ? `@${config.telegramBotUsername}` : 'not set';
   const sessionId = getCurrentSessionId(config, provider);
   const argsText = Array.isArray(providerArgs) && providerArgs.length > 0 ? providerArgs.join(' ') : '(none)';
   const sleepStatus = formatSleepInhibitorStatus(sleepInhibitorState);
+  const transcriptionStatus = config.voiceTranscriptionEnabled ? 'on' : 'off';
   return [
     `Provider: ${provider}`,
     `Args: ${argsText}`,
     `Sleep prevention: ${sleepStatus}`,
+    `Voice transcription: ${transcriptionStatus}, ${formatVoiceTranscriberStatus(voiceTranscriber)}`,
+    `Kokoro TTS: ${formatKokoroTtsStatus(kokoroTts)}`,
     `Directory: ${process.cwd()}`,
     `Bot: ${bot}`,
     `Chat: ${config.telegramChatId || 'not paired'}`,
@@ -149,6 +156,9 @@ class Bridge {
     this.activePromptAbortReason = null;
     this.telegramPendingMessages = [];
     this.telegramDispatchScheduled = false;
+    this.voiceTranscriber = null;
+    this.kokoroTts = null;
+    this.ttsResponseCache = new Map();
 
     this.onSignal = () => {
       this.requestStopCurrentPrompt('shutdown');
@@ -165,12 +175,16 @@ class Bridge {
 
     try {
       this.sleepInhibitorState = startSleepInhibitor({ logger: this.logger });
+      this.voiceTranscriber = await createVoiceTranscriber();
+      this.kokoroTts = await createKokoroTts();
 
       if (this.sleepInhibitorState.active) {
         console.log(`Sleep prevention active (${this.sleepInhibitorState.backend}).`);
       } else {
         console.log(`Sleep prevention unavailable: ${this.sleepInhibitorState.reason || 'unknown error'}.`);
       }
+      console.log(`Voice transcription: ${formatVoiceTranscriberStatus(this.voiceTranscriber)}.`);
+      console.log(`Kokoro TTS: ${formatKokoroTtsStatus(this.kokoroTts)}.`);
 
       await mkdir(ATTACHMENT_DOWNLOAD_DIR, { recursive: true });
 
@@ -363,6 +377,7 @@ class Bridge {
           '/stop - stop current execution and clear queued Telegram messages',
           '/claude - switch to Claude provider',
           '/codex - switch to Codex provider',
+          '/transcription on|off|status - control local Whisper transcription for Telegram audio',
           '/say <text> - send a raw message to Telegram',
           '/ask <prompt> - run prompt through provider and send response to Telegram',
           '/exit - stop HeyAgent',
@@ -374,7 +389,9 @@ class Bridge {
     }
 
     if (line === '/status') {
-      this.writeCliLine(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState));
+      this.writeCliLine(
+        buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState, this.voiceTranscriber, this.kokoroTts)
+      );
       return;
     }
 
@@ -407,6 +424,12 @@ class Bridge {
     if (line === '/codex' || line.startsWith('/codex ')) {
       const argument = line.slice('/codex'.length).trim();
       await this.handleProviderSwitchCommand('codex', argument, 'cli');
+      return;
+    }
+
+    if (line === '/transcription' || line.startsWith('/transcription ')) {
+      const argument = line.slice('/transcription'.length).trim();
+      await this.handleTranscriptionCommand(argument);
       return;
     }
 
@@ -731,6 +754,58 @@ class Bridge {
     this.startTelegramDispatch(false);
   }
 
+  storeTtsResponse(text) {
+    const cleanText = String(text || '').trim();
+    if (!cleanText) {
+      return null;
+    }
+
+    const responseId = crypto.randomBytes(6).toString('base64url');
+    this.ttsResponseCache.set(responseId, {
+      text: cleanText,
+      createdAt: Date.now(),
+      provider: this.provider,
+    });
+
+    while (this.ttsResponseCache.size > MAX_TTS_RESPONSE_CACHE_SIZE) {
+      const oldestKey = this.ttsResponseCache.keys().next().value;
+      this.ttsResponseCache.delete(oldestKey);
+    }
+
+    return responseId;
+  }
+
+  buildTtsReplyMarkup(responseId) {
+    if (!this.kokoroTts?.available || !responseId) {
+      return null;
+    }
+
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: 'Build audio',
+            callback_data: `${TTS_CALLBACK_PREFIX}${responseId}`,
+          },
+        ],
+      ],
+    };
+  }
+
+  async sendAgentResponse(text, options = {}) {
+    const responseId = this.storeTtsResponse(text);
+    const replyMarkup = this.buildTtsReplyMarkup(responseId);
+
+    await this.safeSendMessage(text, {
+      ...options,
+      telegramOptions: replyMarkup
+        ? {
+            reply_markup: replyMarkup,
+          }
+        : {},
+    });
+  }
+
   async queuePrompt(prompt, source, options = {}) {
     const cleanPrompt = String(prompt || '').trim();
     if (!cleanPrompt) {
@@ -762,7 +837,7 @@ class Bridge {
         });
 
         this.forceNewNextPrompt = false;
-        await this.safeSendMessage(response, { from: providerLabel });
+        await this.sendAgentResponse(response, { from: providerLabel });
       } catch (error) {
         if (abortController.signal.aborted || this.isPromptAbortError(error)) {
           return;
@@ -891,6 +966,22 @@ class Bridge {
         this.config.set('telegramUpdateCursor', nextCursor);
       }
 
+      for (const callback of result.callbacks || []) {
+        if (!this.running) {
+          break;
+        }
+
+        if (callback.chatId !== chatId) {
+          continue;
+        }
+
+        if (chatUserId && callback.userId && callback.userId !== chatUserId) {
+          continue;
+        }
+
+        await this.handleCallback(callback);
+      }
+
       for (const message of result.messages) {
         if (!this.running) {
           break;
@@ -941,8 +1032,113 @@ class Bridge {
     await this.enqueueTelegramPrompt(text);
   }
 
+  async handleCallback(callback) {
+    const data = String(callback?.data || '').trim();
+    if (!data.startsWith(TTS_CALLBACK_PREFIX)) {
+      await this.telegram.answerCallbackQuery(callback.callbackQueryId, {
+        text: 'Unknown action.',
+        show_alert: false,
+      });
+      return;
+    }
+
+    const responseId = data.slice(TTS_CALLBACK_PREFIX.length);
+    await this.handleBuildAudioCallback(callback, responseId);
+  }
+
+  async handleBuildAudioCallback(callback, responseId) {
+    const cached = this.ttsResponseCache.get(responseId);
+    if (!cached) {
+      await this.telegram.answerCallbackQuery(callback.callbackQueryId, {
+        text: 'That response is no longer available for audio.',
+        show_alert: true,
+      });
+      return;
+    }
+
+    if (!this.kokoroTts?.available) {
+      await this.telegram.answerCallbackQuery(callback.callbackQueryId, {
+        text: 'Kokoro TTS is unavailable on this machine.',
+        show_alert: true,
+      });
+      await this.safeSendMessage(`Kokoro TTS unavailable: ${this.kokoroTts?.reason || 'unknown error'}`);
+      return;
+    }
+
+    await this.telegram.answerCallbackQuery(callback.callbackQueryId, {
+      text: 'Building audio...',
+      show_alert: false,
+    });
+    await this.safeSendMessage('Building audio with Kokoro TTS...');
+
+    let generated = null;
+    try {
+      generated = await this.kokoroTts.synthesize(cached.text);
+      await this.telegram.sendAudio(this.config.telegramChatId, generated.audioPath, {
+        title: 'HeyAgent response',
+        performer: formatProviderName(cached.provider),
+        caption: 'Generated with Kokoro TTS.',
+      });
+      this.logCliEvent('Kokoro TTS -> Telegram', generated.audioPath);
+    } catch (error) {
+      const messageText = error?.message ? String(error.message) : String(error);
+      this.logger.error(`Kokoro TTS failed: ${messageText}`);
+      await this.safeSendMessage(`Failed to build audio: ${messageText}`);
+    } finally {
+      if (generated?.cleanup) {
+        await generated.cleanup().catch(cleanupError => {
+          this.logger.warn(`Failed to clean TTS temp files: ${cleanupError.message}`);
+        });
+      }
+    }
+  }
+
   isAudioAttachment(type) {
     return type === 'voice' || type === 'audio';
+  }
+
+  isTranscriptionRequest(message) {
+    const userText = String(message?.caption || message?.text || '')
+      .trim()
+      .toLowerCase();
+    return userText === '/transcription' || userText.startsWith('/transcription ');
+  }
+
+  buildTranscribedVoicePrompt(message, transcript) {
+    const lines = [`The user sent a Telegram ${message.type || 'audio'} message.`, '', 'Transcript:', transcript.trim()];
+    const userText = String(message.caption || message.text || '').trim();
+    const cleanedUserText = userText.replace(/^\/transcription(?:@\w+)?(?:\s+|$)/i, '').trim();
+
+    if (cleanedUserText) {
+      lines.push('', `User note: ${cleanedUserText}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  async handleAudioTranscriptionMessage(message, options = {}) {
+    const sendToProvider = options.sendToProvider !== false;
+    if (!this.voiceTranscriber?.available) {
+      await this.safeSendMessage(`Voice transcription unavailable: ${this.voiceTranscriber?.reason || 'unknown error'}`);
+      return;
+    }
+
+    await this.safeSendMessage('Transcribing audio...');
+
+    try {
+      const transcript = await this.voiceTranscriber.transcribeTelegramVoice(this.telegram, message.fileId);
+      if (!sendToProvider) {
+        await this.safeSendMessage(`Transcript:\n\n${transcript}`);
+        return;
+      }
+
+      await this.safeSendMessage(`Transcript:\n\n${transcript}`);
+      await this.enqueueTelegramPrompt(this.buildTranscribedVoicePrompt(message, transcript));
+    } catch (error) {
+      const messageText = error?.message ? String(error.message) : String(error);
+      this.logger.error(`Voice transcription failed: ${messageText}`);
+      await this.safeSendMessage(`Failed to transcribe audio: ${messageText}`);
+    }
   }
 
   buildAttachmentPrompt(message, filePath) {
@@ -984,6 +1180,14 @@ class Bridge {
     await this.safeSendMessage('Attachment received.');
 
     if (this.isAudioAttachment(message.type)) {
+      const transcriptionRequest = this.isTranscriptionRequest(message);
+      if (transcriptionRequest || this.config.voiceTranscriptionEnabled) {
+        await this.handleAudioTranscriptionMessage(message, {
+          sendToProvider: !transcriptionRequest,
+        });
+        return;
+      }
+
       await this.safeSendMessage(DICTATION_HINT_TEXT);
     }
 
@@ -1015,6 +1219,7 @@ class Bridge {
           '/stop - stop current execution and clear queued messages',
           '/claude - switch to Claude provider',
           '/codex - switch to Codex provider',
+          '/transcription on|off|status - control local Whisper transcription for audio messages',
           '/status - show current status',
           '',
           `Send any normal message to talk to ${this.provider}.`,
@@ -1040,8 +1245,15 @@ class Bridge {
       return;
     }
 
+    if (command === '/transcription') {
+      await this.handleTranscriptionCommand(argument);
+      return;
+    }
+
     if (command === '/status') {
-      await this.safeSendMessage(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState));
+      await this.safeSendMessage(
+        buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState, this.voiceTranscriber, this.kokoroTts)
+      );
       return;
     }
 
@@ -1060,6 +1272,44 @@ class Bridge {
     }
 
     await this.safeSendMessage('Unknown command. Use /help.');
+  }
+
+  async handleTranscriptionCommand(argument) {
+    const action = String(argument || '')
+      .trim()
+      .toLowerCase();
+    if (!action || action === 'status') {
+      await this.safeSendMessage(
+        [
+          `Voice transcription is ${this.config.voiceTranscriptionEnabled ? 'on' : 'off'}.`,
+          `Backend: ${formatVoiceTranscriberStatus(this.voiceTranscriber)}`,
+          'Use /transcription on or /transcription off.',
+          'You can also send an audio or voice note with caption /transcription to transcribe it once without sending it to the agent.',
+        ].join('\n')
+      );
+      return;
+    }
+
+    if (action === 'on') {
+      if (!this.voiceTranscriber?.available) {
+        await this.safeSendMessage(`Cannot enable transcription: ${this.voiceTranscriber?.reason || 'backend unavailable'}`);
+        return;
+      }
+
+      this.config.set('voiceTranscriptionEnabled', true);
+      await this.safeSendMessage(
+        'Voice transcription enabled. Future Telegram voice/audio messages will be transcribed and sent to the active agent.'
+      );
+      return;
+    }
+
+    if (action === 'off') {
+      this.config.set('voiceTranscriptionEnabled', false);
+      await this.safeSendMessage('Voice transcription disabled. Audio attachments will be forwarded as files.');
+      return;
+    }
+
+    await this.safeSendMessage('Usage: /transcription on|off|status');
   }
 
   async runProvider(prompt, resume, options = {}) {
@@ -1097,6 +1347,7 @@ class Bridge {
   async safeSendMessage(text, options = {}) {
     const chatId = this.config.telegramChatId;
     const from = String(options.from || 'HeyAgent').trim() || 'HeyAgent';
+    const telegramOptions = options.telegramOptions || {};
 
     if (!chatId) {
       return;
@@ -1105,7 +1356,7 @@ class Bridge {
     this.logCliEvent(`${from} -> Telegram`, text);
 
     try {
-      await this.telegram.sendMessage(chatId, text);
+      await this.telegram.sendMessage(chatId, text, telegramOptions);
     } catch (error) {
       this.logger.error(`Outbox send failed: ${error.message}`);
 
