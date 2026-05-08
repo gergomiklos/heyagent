@@ -6,6 +6,8 @@ export function runProcess(command, args, options = {}) {
   const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
   const cwd = options.cwd || process.cwd();
   const signal = options.signal || null;
+  const onStdout = typeof options.onStdout === 'function' ? options.onStdout : null;
+  const onStderr = typeof options.onStderr === 'function' ? options.onStderr : null;
 
   return new Promise((resolve, reject) => {
     let stdout = '';
@@ -51,11 +53,19 @@ export function runProcess(command, args, options = {}) {
     }, timeoutMs);
 
     child.stdout.on('data', chunk => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      if (onStdout) {
+        onStdout(text);
+      }
     });
 
     child.stderr.on('data', chunk => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (onStderr) {
+        onStderr(text);
+      }
     });
 
     child.on('error', error => {

@@ -33,6 +33,11 @@ hey codex --session [SESSION-ID]    # resumes given session
 # Show local pairing/session status
 hey status
 
+# Keep HeyAgent running on macOS login with launchd
+hey autostart install codex
+hey autostart status
+hey autostart uninstall
+
 # Reset Telegram setup (clears bot token + chat pairing)
 hey reset
 
@@ -66,22 +71,40 @@ Manual fallback avoids tunneling completely:
 If recommended phone onboarding fails in your environment, install system `cloudflared`
 (for example `brew install cloudflared`) or choose manual fallback.
 
+## Remote Availability
+
+Telegram cannot wake HeyAgent if no local process is running. On macOS, install a LaunchAgent after pairing Telegram once:
+
+```bash
+hey autostart install codex
+```
+
+The LaunchAgent starts HeyAgent at login and restarts it if it exits. It cannot power on a shut-down Mac or bypass network/sleep settings before your user session is available.
+
 ## Telegram Commands
 
 Inside Telegram:
 
 - `/help` list commands
 - `/new` force next prompt to run as a new session
+- `/chat new|switch|list|delete|status` manage named agent chat contexts
+- `/reload` restart HeyAgent with the current command
 - `/claude` switch active provider to Claude
 - `/codex` switch active provider to Codex
+- `/model [name|clear]` show or set the active provider model
+- `/call on|off|status` control push-to-talk voice chat with text replies
 - `/transcription on|off|status` control local Whisper transcription for Telegram voice/audio messages
 - `/status` show provider, directory, bot, session, and pairing
 - `/stop` stop current execution and clear queued messages
 
 Any other text message is forwarded to the active agent.
 When Kokoro TTS is available, agent replies include a **Build audio** button that generates an audio file on demand.
+Codex responses stream into a live Telegram preview while the final response is still running.
 
-Audio and voice notes are forwarded as attachments by default. Enable local transcription with `/transcription on`, or send a voice/audio message with caption `/transcription` to transcribe it once without sending it to the agent.
+Use `/chat new <name>` and `/chat switch <name>` to keep multiple agent conversations in the same Telegram bot. Each chat stores its own Claude and Codex session IDs.
+Use `/model <name>` to set the model flag for the active provider. HeyAgent runs providers non-interactively, so interactive provider slash commands are exposed as bridge commands where needed.
+
+Audio and voice notes are forwarded as attachments by default. Enable call mode with `/call on` to use Telegram voice notes as push-to-talk turns with text replies. Enable local transcript mode with `/transcription on`, or send a voice/audio message with caption `/transcription` to transcribe it once without sending it to the agent.
 
 ## Voice and Audio
 
@@ -118,6 +141,12 @@ brew install ffmpeg whisper-cpp
 ```
 
 Then enable it in Telegram:
+
+```text
+/call on
+```
+
+Call mode turns each Telegram voice note into a prompt for the active agent and returns the agent response as text. If you want every transcript echoed into Telegram, use transcript mode instead:
 
 ```text
 /transcription on

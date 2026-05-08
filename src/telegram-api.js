@@ -281,6 +281,28 @@ class TelegramApi {
     }
   }
 
+  async editMessage(chatId, messageId, text, options = {}) {
+    const targetChatId = String(chatId || '').trim();
+    if (!targetChatId) {
+      throw new TelegramApiError('Missing Telegram chat ID');
+    }
+
+    const normalizedMessageId = Number(messageId);
+    if (!Number.isInteger(normalizedMessageId)) {
+      throw new TelegramApiError('Missing Telegram message ID');
+    }
+
+    try {
+      return await this.bot.editMessageText(String(text || ''), {
+        ...options,
+        chat_id: targetChatId,
+        message_id: normalizedMessageId,
+      });
+    } catch (error) {
+      throw toTelegramError(error, 'Failed to edit Telegram message');
+    }
+  }
+
   async answerCallbackQuery(callbackQueryId, options = {}) {
     const normalizedId = String(callbackQueryId || '').trim();
     if (!normalizedId) {

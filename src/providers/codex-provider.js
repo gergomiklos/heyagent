@@ -191,14 +191,60 @@ function parseCodexJsonLines(rawText) {
   };
 }
 
+function extractProgressText(event) {
+  if (!event || typeof event !== 'object') {
+    return '';
+  }
+
+  const eventType = pickValue(event.type).toLowerCase();
+  const delta = typeof event.delta === 'string' ? event.delta : '';
+  if (eventType.endsWith('.delta') && delta) {
+    return delta;
+  }
+
+  return '';
+}
+
+function createCodexProgressParser(onProgress) {
+  if (typeof onProgress !== 'function') {
+    return null;
+  }
+
+  let pending = '';
+  return chunk => {
+    pending += String(chunk || '');
+    const lines = pending.split('\n');
+    pending = lines.pop() || '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith('{')) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(line);
+        const progressText = extractProgressText(event);
+        if (progressText) {
+          onProgress(progressText);
+        }
+      } catch {
+        // Ignore partial or non-event output.
+      }
+    }
+  };
+}
+
 export async function runCodexPrompt(prompt, options = {}) {
   const resume = Boolean(options.resume);
   const extraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
   const sessionId = pickValue(options.sessionId);
   const onSessionId = typeof options.onSessionId === 'function' ? options.onSessionId : null;
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const cwd = options.cwd || process.cwd();
   const abortSignal = options.abortSignal || null;
   const outputFile = resume ? null : createOutputFile();
+  const parseProgressChunk = createCodexProgressParser(onProgress);
 
   const args = resume
     ? sessionId
@@ -211,6 +257,7 @@ export async function runCodexPrompt(prompt, options = {}) {
       cwd,
       timeoutMs: 20 * 60 * 1000,
       signal: abortSignal,
+      onStdout: parseProgressChunk,
     });
 
     const parsed = parseCodexJsonLines(result.stdout || '');

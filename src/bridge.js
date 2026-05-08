@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,9 +22,11 @@ const BOTFATHER_URL = 'https://t.me/BotFather';
 const SETUP_MODE_PHONE = 'phone_onboarding';
 const SETUP_MODE_MANUAL = 'manual_fallback';
 const ATTACHMENT_DOWNLOAD_DIR = path.join(os.tmpdir(), 'heyagent-files');
-const DICTATION_HINT_TEXT = 'Hint: use /transcription on for local voice transcription, or use phone keyboard dictation.';
+const DICTATION_HINT_TEXT = 'Hint: use /call on for push-to-talk voice chat, /transcription on for transcript mode, or phone keyboard dictation.';
 const TTS_CALLBACK_PREFIX = 'tts:';
 const MAX_TTS_RESPONSE_CACHE_SIZE = 30;
+const TELEGRAM_PROGRESS_FLUSH_MS = 1600;
+const TELEGRAM_PROGRESS_MAX_CHARS = 3200;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -40,10 +43,17 @@ async function promptLine(question) {
 }
 
 function getCurrentSessionId(config, provider) {
+  const chat = config.getAgentChat ? config.getAgentChat(config.activeAgentChatId) : null;
   if (provider === 'codex') {
+    if (chat?.codexLastSessionId) {
+      return chat.codexLastSessionId;
+    }
     return config.codexLastSessionId || null;
   }
   if (provider === 'claude') {
+    if (chat?.claudeLastSessionId) {
+      return chat.claudeLastSessionId;
+    }
     return config.claudeLastSessionId || null;
   }
   return null;
@@ -54,6 +64,57 @@ function splitArgs(raw) {
     .trim()
     .split(/\s+/)
     .filter(Boolean);
+}
+
+function normalizeAgentChatId(name) {
+  const normalized = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || 'default';
+}
+
+function getOptionValue(args = [], names = []) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] || '');
+    if (names.includes(arg)) {
+      return String(args[index + 1] || '').trim();
+    }
+
+    for (const name of names) {
+      const prefix = `${name}=`;
+      if (arg.startsWith(prefix)) {
+        return arg.slice(prefix.length).trim();
+      }
+    }
+  }
+
+  return '';
+}
+
+function setOptionValue(args = [], names = [], value = '', preferredName = names[0]) {
+  const nextArgs = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] || '');
+    if (names.includes(arg)) {
+      index += 1;
+      continue;
+    }
+
+    if (names.some(name => arg.startsWith(`${name}=`))) {
+      continue;
+    }
+
+    nextArgs.push(arg);
+  }
+
+  const normalizedValue = String(value || '').trim();
+  if (normalizedValue) {
+    nextArgs.push(preferredName, normalizedValue);
+  }
+
+  return nextArgs;
 }
 
 function formatProviderName(provider) {
@@ -81,13 +142,17 @@ function makePairCode() {
 function buildStatusText(config, provider, providerArgs = [], sleepInhibitorState = null, voiceTranscriber = null, kokoroTts = null) {
   const bot = config.telegramBotUsername ? `@${config.telegramBotUsername}` : 'not set';
   const sessionId = getCurrentSessionId(config, provider);
+  const activeChat = config.getAgentChat ? config.getAgentChat(config.activeAgentChatId) : null;
   const argsText = Array.isArray(providerArgs) && providerArgs.length > 0 ? providerArgs.join(' ') : '(none)';
   const sleepStatus = formatSleepInhibitorStatus(sleepInhibitorState);
   const transcriptionStatus = config.voiceTranscriptionEnabled ? 'on' : 'off';
+  const callModeStatus = config.callModeEnabled ? 'on' : 'off';
   return [
     `Provider: ${provider}`,
+    `Chat context: ${activeChat?.name || 'default'}`,
     `Args: ${argsText}`,
     `Sleep prevention: ${sleepStatus}`,
+    `Call mode: ${callModeStatus}`,
     `Voice transcription: ${transcriptionStatus}, ${formatVoiceTranscriberStatus(voiceTranscriber)}`,
     `Kokoro TTS: ${formatKokoroTtsStatus(kokoroTts)}`,
     `Directory: ${process.cwd()}`,
@@ -133,6 +198,19 @@ function toLogPreview(text) {
   }
 
   return `${singleLine.slice(0, 239)}…`;
+}
+
+function formatTelegramProgressText(providerLabel, text) {
+  const cleanText = String(text || '').trim();
+  if (!cleanText) {
+    return `${providerLabel} is responding...`;
+  }
+
+  const tail =
+    cleanText.length <= TELEGRAM_PROGRESS_MAX_CHARS
+      ? cleanText
+      : cleanText.slice(cleanText.length - TELEGRAM_PROGRESS_MAX_CHARS).replace(/^\S*\s*/, '');
+  return `${providerLabel} is responding...\n\n${tail}`;
 }
 
 class Bridge {
@@ -253,11 +331,19 @@ class Bridge {
 
   setBoundSessionId(sessionId) {
     const normalized = String(sessionId || '').trim() || null;
+    const activeChatId = this.config.activeAgentChatId || 'default';
+    const chatPatch = {
+      provider: this.provider,
+    };
     if (this.provider === 'codex') {
+      chatPatch.codexLastSessionId = normalized;
+      this.config.saveAgentChat(activeChatId, chatPatch);
       this.config.set('codexLastSessionId', normalized);
       return;
     }
     if (this.provider === 'claude') {
+      chatPatch.claudeLastSessionId = normalized;
+      this.config.saveAgentChat(activeChatId, chatPatch);
       this.config.set('claudeLastSessionId', normalized);
     }
   }
@@ -277,7 +363,20 @@ class Bridge {
       claudeArgs: provider === 'claude' ? effective.providerArgs : this.config.claudeArgs,
       codexArgs: provider === 'codex' ? effective.providerArgs : this.config.codexArgs,
     });
+    this.config.saveAgentChat(this.config.activeAgentChatId, { provider });
 
+    return effective;
+  }
+
+  setProviderArgs(args = []) {
+    const effective = applyDefaultBypassArgs(this.provider, Array.isArray(args) ? args : []);
+    this.providerArgs = effective.providerArgs;
+    this.config.setMany({
+      provider: this.provider,
+      claudeArgs: this.provider === 'claude' ? this.providerArgs : this.config.claudeArgs,
+      codexArgs: this.provider === 'codex' ? this.providerArgs : this.config.codexArgs,
+    });
+    this.config.saveAgentChat(this.config.activeAgentChatId, { provider: this.provider });
     return effective;
   }
 
@@ -301,6 +400,48 @@ class Bridge {
         .filter(Boolean)
         .join('\n')
     );
+  }
+
+  spawnReloadProcess() {
+    const args = process.argv.slice(1);
+    if (args.length === 0) {
+      throw new Error('Cannot reload: current process command is unavailable.');
+    }
+
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      env: process.env,
+      detached: false,
+      stdio: 'inherit',
+    });
+    child.unref();
+  }
+
+  async handleReloadCommand(source = 'telegram') {
+    const sourceLabel = source === 'cli' ? 'CLI' : 'Telegram';
+    const stopped = this.requestStopCurrentPrompt('reload');
+    const clearedCount = this.clearQueuedTelegramMessages();
+
+    try {
+      this.spawnReloadProcess();
+    } catch (error) {
+      await this.safeSendMessage(`Reload failed: ${error.message}`);
+      return;
+    }
+
+    this.logCliEvent(`${sourceLabel} reload`, process.argv.slice(1).join(' '));
+    await this.safeSendMessage(
+      [
+        'Reloading HeyAgent with the current command...',
+        stopped ? 'Stopped the active provider run.' : null,
+        clearedCount > 0 ? `Cleared ${clearedCount} queued message${clearedCount === 1 ? '' : 's'}.` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+
+    this.running = false;
+    this.stopLocalInputLoop();
   }
 
   startLocalInputLoop() {
@@ -374,9 +515,13 @@ class Bridge {
           '/help - show this list',
           '/status - show current status',
           '/new - reset session (next prompt starts fresh)',
+          '/chat new|switch|list|delete|status - manage agent chat contexts',
+          '/reload - restart HeyAgent with the current command',
           '/stop - stop current execution and clear queued Telegram messages',
           '/claude - switch to Claude provider',
           '/codex - switch to Codex provider',
+          '/model [name|clear] - show or set the active provider model',
+          '/call on|off|status - push-to-talk voice turns with text replies',
           '/transcription on|off|status - control local Whisper transcription for Telegram audio',
           '/say <text> - send a raw message to Telegram',
           '/ask <prompt> - run prompt through provider and send response to Telegram',
@@ -398,6 +543,18 @@ class Bridge {
     if (line === '/new') {
       this.resetSessionMode();
       await this.safeSendMessage('Session reset from CLI. Your next message starts fresh.');
+      return;
+    }
+
+    if (line === '/reload') {
+      await this.handleReloadCommand('cli');
+      return;
+    }
+
+    if (line === '/chat' || line.startsWith('/chat ') || line === '/context' || line.startsWith('/context ')) {
+      const commandName = line.startsWith('/context') ? '/context' : '/chat';
+      const argument = line.slice(commandName.length).trim();
+      await this.handleAgentChatCommand(argument);
       return;
     }
 
@@ -427,9 +584,21 @@ class Bridge {
       return;
     }
 
+    if (line === '/model' || line.startsWith('/model ')) {
+      const argument = line.slice('/model'.length).trim();
+      await this.handleModelCommand(argument);
+      return;
+    }
+
     if (line === '/transcription' || line.startsWith('/transcription ')) {
       const argument = line.slice('/transcription'.length).trim();
       await this.handleTranscriptionCommand(argument);
+      return;
+    }
+
+    if (line === '/call' || line.startsWith('/call ')) {
+      const argument = line.slice('/call'.length).trim();
+      await this.handleCallCommand(argument);
       return;
     }
 
@@ -676,6 +845,7 @@ class Bridge {
     }
 
     this.forceNewNextPrompt = true;
+    this.config.saveAgentChat(this.config.activeAgentChatId, updates);
     this.config.setMany(updates);
   }
 
@@ -792,6 +962,102 @@ class Bridge {
     };
   }
 
+  createTelegramProgressReporter(providerLabel) {
+    const chatId = this.config.telegramChatId;
+    if (!chatId || !this.telegram) {
+      return null;
+    }
+
+    let messageId = null;
+    let text = '';
+    let initialText = `${providerLabel} is working...`;
+    let lastSentText = '';
+    let flushTimer = null;
+    let closed = false;
+    let pendingFlush = Promise.resolve();
+
+    const flush = async force => {
+      if (closed && !force) {
+        return;
+      }
+
+      const nextText = text.trim() ? formatTelegramProgressText(providerLabel, text) : initialText;
+      if (!force && nextText === lastSentText) {
+        return;
+      }
+
+      lastSentText = nextText;
+      try {
+        if (!messageId) {
+          const sent = await this.safeSendMessage(nextText, { from: providerLabel });
+          messageId = sent?.[0]?.message_id || null;
+          return;
+        }
+
+        await this.telegram.editMessage(chatId, messageId, nextText);
+      } catch (error) {
+        this.logger.warn(`Telegram progress update failed: ${error.message}`);
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimer || closed) {
+        return;
+      }
+
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        pendingFlush = pendingFlush
+          .then(() => flush(false))
+          .catch(error => {
+            this.logger.warn(`Telegram progress flush failed: ${error.message}`);
+          });
+      }, TELEGRAM_PROGRESS_FLUSH_MS);
+    };
+
+    return {
+      start: messageText => {
+        initialText = String(messageText || '').trim() || `${providerLabel} is working...`;
+        pendingFlush = pendingFlush
+          .then(() => flush(true))
+          .catch(error => {
+            this.logger.warn(`Telegram progress start failed: ${error.message}`);
+          });
+      },
+      push: chunk => {
+        const value = String(chunk || '');
+        if (!value || closed) {
+          return;
+        }
+        text += value;
+        scheduleFlush();
+      },
+      finish: async finalText => {
+        closed = true;
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        await pendingFlush;
+
+        if (!messageId) {
+          return;
+        }
+
+        const doneText = String(finalText || '').trim() || `${providerLabel} response complete.`;
+        if (doneText === lastSentText) {
+          return;
+        }
+
+        try {
+          await this.telegram.editMessage(chatId, messageId, doneText);
+        } catch (error) {
+          this.logger.warn(`Telegram progress completion failed: ${error.message}`);
+        }
+      },
+    };
+  }
+
   async sendAgentResponse(text, options = {}) {
     const responseId = this.storeTtsResponse(text);
     const replyMarkup = this.buildTtsReplyMarkup(responseId);
@@ -818,6 +1084,7 @@ class Bridge {
       const resume = !this.forceNewNextPrompt;
       const abortController = new globalThis.AbortController();
       const groupedCount = Number.isFinite(options.groupedCount) ? Math.max(1, Number(options.groupedCount)) : 1;
+      const progressReporter = source === 'telegram' ? this.createTelegramProgressReporter(providerLabel) : null;
       this.logCliEvent(`${sourceLabel} -> ${providerLabel}`, cleanPrompt);
       this.activePromptAbortController = abortController;
       this.activePromptSource = source;
@@ -825,20 +1092,28 @@ class Bridge {
 
       try {
         if (source === 'telegram') {
+          const workingText = groupedCount > 1 ? `${providerLabel} is working on ${groupedCount} messages...` : `${providerLabel} is working...`;
           if (groupedCount > 1) {
-            await this.safeSendMessage(`${providerLabel} is working on ${groupedCount} messages...`);
+            progressReporter?.start(workingText);
           } else {
-            await this.safeSendMessage(`${providerLabel} is working...`);
+            progressReporter?.start(workingText);
+          }
+
+          if (!progressReporter) {
+            await this.safeSendMessage(workingText);
           }
         }
 
         const response = await this.runProvider(cleanPrompt, resume, {
           abortSignal: abortController.signal,
+          onProgress: progressReporter?.push,
         });
 
         this.forceNewNextPrompt = false;
+        await progressReporter?.finish(`${providerLabel} response complete.`);
         await this.sendAgentResponse(response, { from: providerLabel });
       } catch (error) {
+        await progressReporter?.finish(`${providerLabel} response stopped.`);
         if (abortController.signal.aborted || this.isPromptAbortError(error)) {
           return;
         }
@@ -1104,8 +1379,10 @@ class Bridge {
     return userText === '/transcription' || userText.startsWith('/transcription ');
   }
 
-  buildTranscribedVoicePrompt(message, transcript) {
-    const lines = [`The user sent a Telegram ${message.type || 'audio'} message.`, '', 'Transcript:', transcript.trim()];
+  buildTranscribedVoicePrompt(message, transcript, options = {}) {
+    const lines = options.callMode
+      ? ['The user is speaking through Telegram call mode.', '', 'Transcript:', transcript.trim()]
+      : [`The user sent a Telegram ${message.type || 'audio'} message.`, '', 'Transcript:', transcript.trim()];
     const userText = String(message.caption || message.text || '').trim();
     const cleanedUserText = userText.replace(/^\/transcription(?:@\w+)?(?:\s+|$)/i, '').trim();
 
@@ -1113,17 +1390,30 @@ class Bridge {
       lines.push('', `User note: ${cleanedUserText}`);
     }
 
+    if (options.callMode) {
+      lines.push('', 'Respond naturally in text, as if this were your side of a voice call.');
+    }
+
     return lines.join('\n');
   }
 
   async handleAudioTranscriptionMessage(message, options = {}) {
     const sendToProvider = options.sendToProvider !== false;
+    const echoTranscript = options.echoTranscript !== false;
     if (!this.voiceTranscriber?.available) {
       await this.safeSendMessage(`Voice transcription unavailable: ${this.voiceTranscriber?.reason || 'unknown error'}`);
       return;
     }
 
-    await this.safeSendMessage('Transcribing audio...');
+    const kind = message.type === 'voice' ? 'voice note' : 'audio';
+    const progressLines = [options.callMode ? `Listening to ${kind}...` : `Transcribing ${kind} with local Whisper...`];
+    if (this.voiceTranscriber.modelCanDownload && this.voiceTranscriber.isModelReady) {
+      const modelReady = await this.voiceTranscriber.isModelReady();
+      if (!modelReady) {
+        progressLines.push('Preparing the Whisper model first. The first run can take a minute.');
+      }
+    }
+    await this.safeSendMessage(progressLines.join('\n'));
 
     try {
       const transcript = await this.voiceTranscriber.transcribeTelegramVoice(this.telegram, message.fileId);
@@ -1132,8 +1422,10 @@ class Bridge {
         return;
       }
 
-      await this.safeSendMessage(`Transcript:\n\n${transcript}`);
-      await this.enqueueTelegramPrompt(this.buildTranscribedVoicePrompt(message, transcript));
+      if (echoTranscript) {
+        await this.safeSendMessage(`Transcript:\n\n${transcript}`);
+      }
+      await this.enqueueTelegramPrompt(this.buildTranscribedVoicePrompt(message, transcript, { callMode: options.callMode }));
     } catch (error) {
       const messageText = error?.message ? String(error.message) : String(error);
       this.logger.error(`Voice transcription failed: ${messageText}`);
@@ -1177,18 +1469,23 @@ class Bridge {
 
     const durationText = Number.isFinite(message.durationSec) ? ` (${message.durationSec}s)` : '';
     this.logCliEvent(`Telegram -> ${message.type || 'Attachment'}`, `received${durationText}`);
-    await this.safeSendMessage('Attachment received.');
 
     if (this.isAudioAttachment(message.type)) {
       const transcriptionRequest = this.isTranscriptionRequest(message);
-      if (transcriptionRequest || this.config.voiceTranscriptionEnabled) {
+      const callMode = this.config.callModeEnabled && !transcriptionRequest;
+      if (transcriptionRequest || callMode || this.config.voiceTranscriptionEnabled) {
         await this.handleAudioTranscriptionMessage(message, {
           sendToProvider: !transcriptionRequest,
+          echoTranscript: !callMode,
+          callMode,
         });
         return;
       }
 
+      await this.safeSendMessage('Audio received.');
       await this.safeSendMessage(DICTATION_HINT_TEXT);
+    } else {
+      await this.safeSendMessage('Attachment received.');
     }
 
     try {
@@ -1216,9 +1513,13 @@ class Bridge {
           'HeyAgent commands:',
           '/help - show command list',
           '/new - start a fresh session',
+          '/chat new|switch|list|delete|status - manage agent chat contexts',
+          '/reload - restart HeyAgent with the current command',
           '/stop - stop current execution and clear queued messages',
           '/claude - switch to Claude provider',
           '/codex - switch to Codex provider',
+          '/model [name|clear] - show or set the active provider model',
+          '/call on|off|status - push-to-talk voice turns with text replies',
           '/transcription on|off|status - control local Whisper transcription for audio messages',
           '/status - show current status',
           '',
@@ -1235,6 +1536,16 @@ class Bridge {
       return;
     }
 
+    if (command === '/reload') {
+      await this.handleReloadCommand('telegram');
+      return;
+    }
+
+    if (command === '/chat' || command === '/context') {
+      await this.handleAgentChatCommand(argument);
+      return;
+    }
+
     if (command === '/claude') {
       await this.handleProviderSwitchCommand('claude', argument, 'telegram');
       return;
@@ -1245,8 +1556,18 @@ class Bridge {
       return;
     }
 
+    if (command === '/model') {
+      await this.handleModelCommand(argument);
+      return;
+    }
+
     if (command === '/transcription') {
       await this.handleTranscriptionCommand(argument);
+      return;
+    }
+
+    if (command === '/call') {
+      await this.handleCallCommand(argument);
       return;
     }
 
@@ -1274,18 +1595,190 @@ class Bridge {
     await this.safeSendMessage('Unknown command. Use /help.');
   }
 
+  getActiveModel() {
+    return getOptionValue(this.providerArgs, ['--model', '-m']);
+  }
+
+  async handleModelCommand(argument) {
+    const value = String(argument || '').trim();
+    const currentModel = this.getActiveModel();
+
+    if (!value || value.toLowerCase() === 'status') {
+      await this.safeSendMessage(
+        [`Provider: ${this.provider}`, `Model: ${currentModel || 'default'}`, 'Use /model <name> to set, or /model clear to remove override.'].join(
+          '\n'
+        )
+      );
+      return;
+    }
+
+    if (value.toLowerCase() === 'clear' || value.toLowerCase() === 'default') {
+      const nextArgs = setOptionValue(this.providerArgs, ['--model', '-m'], '', '--model');
+      this.setProviderArgs(nextArgs);
+      await this.safeSendMessage(`Model override cleared for ${this.provider}.`);
+      return;
+    }
+
+    const nextArgs = setOptionValue(this.providerArgs, ['--model', '-m'], value, '--model');
+    this.setProviderArgs(nextArgs);
+    await this.safeSendMessage(`Model for ${this.provider} set to ${value}.`);
+  }
+
+  findAgentChat(identifier) {
+    const needle = String(identifier || '').trim();
+    if (!needle) {
+      return null;
+    }
+
+    const normalizedId = normalizeAgentChatId(needle);
+    const exact = this.config.getAgentChat(normalizedId);
+    if (this.config.agentChats[normalizedId] || normalizedId === 'default') {
+      return exact;
+    }
+
+    return this.config.listAgentChats().find(chat => chat.name.toLowerCase() === needle.toLowerCase()) || null;
+  }
+
+  formatAgentChatList() {
+    const activeId = this.config.activeAgentChatId;
+    const chats = this.config.listAgentChats();
+    return chats
+      .map(chat => {
+        const marker = chat.id === activeId ? '*' : '-';
+        const provider = chat.provider || this.provider;
+        const codex = chat.codexLastSessionId ? 'codex session' : 'codex new';
+        const claude = chat.claudeLastSessionId ? 'claude session' : 'claude new';
+        return `${marker} ${chat.name} (${provider}, ${codex}, ${claude})`;
+      })
+      .join('\n');
+  }
+
+  activateAgentChat(chat) {
+    this.config.setActiveAgentChat(chat.id);
+
+    const provider = chat.provider === 'claude' || chat.provider === 'codex' ? chat.provider : this.provider;
+    if (provider !== this.provider) {
+      this.switchProvider(provider);
+    } else {
+      this.config.saveAgentChat(chat.id, { provider });
+    }
+
+    this.forceNewNextPrompt = !getCurrentSessionId(this.config, this.provider);
+  }
+
+  async handleAgentChatCommand(argument) {
+    const parts = splitArgs(argument);
+    const action = String(parts[0] || 'status').toLowerCase();
+    const value = parts.slice(1).join(' ').trim();
+
+    if (action === 'status') {
+      const active = this.config.getAgentChat(this.config.activeAgentChatId);
+      await this.safeSendMessage(
+        [
+          `Active chat: ${active.name}`,
+          `Provider: ${this.provider}`,
+          `Session: ${getCurrentSessionId(this.config, this.provider) || 'new'}`,
+          'Use /chat list, /chat new <name>, /chat switch <name>, or /chat delete <name>.',
+        ].join('\n')
+      );
+      return;
+    }
+
+    if (action === 'list') {
+      await this.safeSendMessage(`Agent chats:\n\n${this.formatAgentChatList()}`);
+      return;
+    }
+
+    if (action === 'new' || action === 'create') {
+      if (!value) {
+        await this.safeSendMessage('Usage: /chat new <name>');
+        return;
+      }
+
+      const chatId = normalizeAgentChatId(value);
+      if (this.config.agentChats[chatId]) {
+        await this.safeSendMessage(`Chat already exists: ${this.config.getAgentChat(chatId).name}`);
+        return;
+      }
+
+      this.config.saveAgentChat(chatId, {
+        name: value,
+        provider: this.provider,
+        claudeLastSessionId: null,
+        codexLastSessionId: null,
+      });
+      this.config.setActiveAgentChat(chatId);
+      this.forceNewNextPrompt = true;
+      await this.safeSendMessage(`Created and switched to chat: ${value}`);
+      return;
+    }
+
+    if (action === 'switch' || action === 'use') {
+      if (!value) {
+        await this.safeSendMessage('Usage: /chat switch <name>');
+        return;
+      }
+
+      const chat = this.findAgentChat(value);
+      if (!chat) {
+        await this.safeSendMessage(`Chat not found: ${value}`);
+        return;
+      }
+
+      this.activateAgentChat(chat);
+      await this.safeSendMessage(
+        [`Switched to chat: ${chat.name}`, `Provider: ${this.provider}`, `Session: ${getCurrentSessionId(this.config, this.provider) || 'new'}`].join(
+          '\n'
+        )
+      );
+      return;
+    }
+
+    if (action === 'delete' || action === 'remove') {
+      if (!value) {
+        await this.safeSendMessage('Usage: /chat delete <name>');
+        return;
+      }
+
+      const chat = this.findAgentChat(value);
+      if (!chat || chat.id === 'default') {
+        await this.safeSendMessage(chat?.id === 'default' ? 'Cannot delete the default chat.' : `Chat not found: ${value}`);
+        return;
+      }
+
+      const wasActive = chat.id === this.config.activeAgentChatId;
+      this.config.deleteAgentChat(chat.id);
+      if (wasActive) {
+        this.activateAgentChat(this.config.getAgentChat('default'));
+      }
+      await this.safeSendMessage(`Deleted chat: ${chat.name}`);
+      return;
+    }
+
+    await this.safeSendMessage('Usage: /chat new|switch|list|delete|status');
+  }
+
   async handleTranscriptionCommand(argument) {
     const action = String(argument || '')
       .trim()
       .toLowerCase();
     if (!action || action === 'status') {
+      let modelStatus = null;
+      if (this.voiceTranscriber?.available && this.voiceTranscriber.isModelReady) {
+        const modelReady = await this.voiceTranscriber.isModelReady();
+        modelStatus = `Model: ${modelReady ? 'ready' : 'not downloaded yet'} (${this.voiceTranscriber.modelPath})`;
+      }
+
       await this.safeSendMessage(
         [
           `Voice transcription is ${this.config.voiceTranscriptionEnabled ? 'on' : 'off'}.`,
           `Backend: ${formatVoiceTranscriberStatus(this.voiceTranscriber)}`,
+          modelStatus,
           'Use /transcription on or /transcription off.',
           'You can also send an audio or voice note with caption /transcription to transcribe it once without sending it to the agent.',
-        ].join('\n')
+        ]
+          .filter(Boolean)
+          .join('\n')
       );
       return;
     }
@@ -1312,8 +1805,46 @@ class Bridge {
     await this.safeSendMessage('Usage: /transcription on|off|status');
   }
 
+  async handleCallCommand(argument) {
+    const action = String(argument || '')
+      .trim()
+      .toLowerCase();
+
+    if (!action || action === 'status') {
+      await this.safeSendMessage(
+        [
+          `Call mode is ${this.config.callModeEnabled ? 'on' : 'off'}.`,
+          `Backend: ${formatVoiceTranscriberStatus(this.voiceTranscriber)}`,
+          'Use /call on to make Telegram voice notes behave like push-to-talk turns.',
+          'Use /call off to return audio messages to normal attachment/transcription handling.',
+        ].join('\n')
+      );
+      return;
+    }
+
+    if (action === 'on') {
+      if (!this.voiceTranscriber?.available) {
+        await this.safeSendMessage(`Cannot enable call mode: ${this.voiceTranscriber?.reason || 'voice backend unavailable'}`);
+        return;
+      }
+
+      this.config.set('callModeEnabled', true);
+      await this.safeSendMessage('Call mode enabled. Send Telegram voice notes as push-to-talk turns; replies come back as text.');
+      return;
+    }
+
+    if (action === 'off') {
+      this.config.set('callModeEnabled', false);
+      await this.safeSendMessage('Call mode disabled.');
+      return;
+    }
+
+    await this.safeSendMessage('Usage: /call on|off|status');
+  }
+
   async runProvider(prompt, resume, options = {}) {
     const abortSignal = options.abortSignal || null;
+    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
 
     if (this.provider === 'claude') {
       return runClaudePrompt(prompt, {
@@ -1334,6 +1865,7 @@ class Bridge {
         extraArgs: this.providerArgs,
         cwd: process.cwd(),
         abortSignal,
+        onProgress,
         sessionId: this.config.codexLastSessionId,
         onSessionId: sessionId => {
           this.setBoundSessionId(sessionId);
@@ -1356,7 +1888,7 @@ class Bridge {
     this.logCliEvent(`${from} -> Telegram`, text);
 
     try {
-      await this.telegram.sendMessage(chatId, text, telegramOptions);
+      return await this.telegram.sendMessage(chatId, text, telegramOptions);
     } catch (error) {
       this.logger.error(`Outbox send failed: ${error.message}`);
 
@@ -1366,6 +1898,8 @@ class Bridge {
         console.error('Telegram bot token is invalid. Restart and enter a new token.');
       }
     }
+
+    return null;
   }
 }
 

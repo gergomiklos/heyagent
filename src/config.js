@@ -17,8 +17,11 @@ class Config {
       telegramChatUserId: null,
       telegramUpdateCursor: 0,
       voiceTranscriptionEnabled: false,
+      callModeEnabled: false,
       claudeLastSessionId: null,
       codexLastSessionId: null,
+      activeAgentChatId: 'default',
+      agentChats: {},
     };
     this._data = { ...this.defaults };
     this.load();
@@ -102,12 +105,96 @@ class Config {
     return Boolean(this._data.voiceTranscriptionEnabled ?? this.defaults.voiceTranscriptionEnabled);
   }
 
+  get callModeEnabled() {
+    return Boolean(this._data.callModeEnabled ?? this.defaults.callModeEnabled);
+  }
+
   get codexLastSessionId() {
     return this._data.codexLastSessionId ?? this.defaults.codexLastSessionId;
   }
 
   get claudeLastSessionId() {
     return this._data.claudeLastSessionId ?? this.defaults.claudeLastSessionId;
+  }
+
+  get activeAgentChatId() {
+    const value = this._data.activeAgentChatId ?? this.defaults.activeAgentChatId;
+    return String(value || 'default').trim() || 'default';
+  }
+
+  get agentChats() {
+    const value = this._data.agentChats ?? this.defaults.agentChats;
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  getAgentChat(chatId = this.activeAgentChatId) {
+    const normalizedId = String(chatId || 'default').trim() || 'default';
+    const stored = this.agentChats[normalizedId];
+    const fallback = normalizedId === 'default' ? { name: 'default' } : { name: normalizedId };
+    const chat = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : fallback;
+
+    return {
+      id: normalizedId,
+      name: String(chat.name || normalizedId).trim() || normalizedId,
+      provider: chat.provider || null,
+      claudeLastSessionId: chat.claudeLastSessionId || null,
+      codexLastSessionId: chat.codexLastSessionId || null,
+      createdAt: chat.createdAt || null,
+      updatedAt: chat.updatedAt || null,
+    };
+  }
+
+  listAgentChats() {
+    const chats = Object.keys(this.agentChats).map(chatId => this.getAgentChat(chatId));
+    if (!chats.some(chat => chat.id === 'default')) {
+      chats.unshift(this.getAgentChat('default'));
+    }
+    return chats.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  saveAgentChat(chatId, data = {}) {
+    const normalizedId = String(chatId || 'default').trim() || 'default';
+    const now = new Date().toISOString();
+    const previous = this.getAgentChat(normalizedId);
+    const next = {
+      ...previous,
+      ...data,
+      id: normalizedId,
+      name: String(data.name || previous.name || normalizedId).trim() || normalizedId,
+      createdAt: previous.createdAt || now,
+      updatedAt: now,
+    };
+
+    this._data.agentChats = {
+      ...this.agentChats,
+      [normalizedId]: next,
+    };
+    return this.save();
+  }
+
+  setActiveAgentChat(chatId) {
+    const normalizedId = String(chatId || 'default').trim() || 'default';
+    this._data.activeAgentChatId = normalizedId;
+    if (!this.agentChats[normalizedId]) {
+      this.saveAgentChat(normalizedId, { name: normalizedId });
+      return this._data;
+    }
+    return this.save();
+  }
+
+  deleteAgentChat(chatId) {
+    const normalizedId = String(chatId || '').trim();
+    if (!normalizedId || normalizedId === 'default') {
+      return this._data;
+    }
+
+    const nextChats = { ...this.agentChats };
+    delete nextChats[normalizedId];
+    this._data.agentChats = nextChats;
+    if (this.activeAgentChatId === normalizedId) {
+      this._data.activeAgentChatId = 'default';
+    }
+    return this.save();
   }
 
   isPaired() {

@@ -198,6 +198,8 @@ async function resolveModelPath(modelPathFromEnv) {
     return {
       modelPath: explicitPath,
       modelHint: 'custom',
+      modelCanDownload: false,
+      isModelReady: async () => true,
       ensureModelReady: async () => explicitPath,
     };
   }
@@ -208,6 +210,8 @@ async function resolveModelPath(modelPathFromEnv) {
       return {
         modelPath: candidate,
         modelHint: 'auto (cached)',
+        modelCanDownload: false,
+        isModelReady: async () => true,
         ensureModelReady: async () => candidate,
       };
     }
@@ -218,6 +222,8 @@ async function resolveModelPath(modelPathFromEnv) {
   return {
     modelPath: DEFAULT_MODEL_PATH,
     modelHint: 'auto (downloads on first voice note)',
+    modelCanDownload: true,
+    isModelReady: async () => fileExists(DEFAULT_MODEL_PATH),
     async ensureModelReady() {
       if (await fileExists(DEFAULT_MODEL_PATH)) {
         return DEFAULT_MODEL_PATH;
@@ -269,6 +275,8 @@ export async function createVoiceTranscriber() {
     whisperCliCommand,
     modelPath: modelResolver.modelPath,
     modelHint: modelResolver.modelHint,
+    modelCanDownload: modelResolver.modelCanDownload,
+    isModelReady: modelResolver.isModelReady,
     reason: null,
     async transcribeTelegramVoice(telegramApi, fileId) {
       const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'heyagent-voice-'));
