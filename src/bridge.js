@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -48,11 +48,17 @@ function getCurrentSessionId(config, provider) {
     if (chat?.codexLastSessionId) {
       return chat.codexLastSessionId;
     }
+    if (chat && chat.id !== 'default') {
+      return null;
+    }
     return config.codexLastSessionId || null;
   }
   if (provider === 'claude') {
     if (chat?.claudeLastSessionId) {
       return chat.claudeLastSessionId;
+    }
+    if (chat && chat.id !== 'default') {
+      return null;
     }
     return config.claudeLastSessionId || null;
   }
@@ -143,6 +149,7 @@ function buildStatusText(config, provider, providerArgs = [], sleepInhibitorStat
   const bot = config.telegramBotUsername ? `@${config.telegramBotUsername}` : 'not set';
   const sessionId = getCurrentSessionId(config, provider);
   const activeChat = config.getAgentChat ? config.getAgentChat(config.activeAgentChatId) : null;
+  const activeDirectory = activeChat?.cwd || process.cwd();
   const argsText = Array.isArray(providerArgs) && providerArgs.length > 0 ? providerArgs.join(' ') : '(none)';
   const sleepStatus = formatSleepInhibitorStatus(sleepInhibitorState);
   const transcriptionStatus = config.voiceTranscriptionEnabled ? 'on' : 'off';
@@ -155,7 +162,7 @@ function buildStatusText(config, provider, providerArgs = [], sleepInhibitorStat
     `Call mode: ${callModeStatus}`,
     `Voice transcription: ${transcriptionStatus}, ${formatVoiceTranscriberStatus(voiceTranscriber)}`,
     `Kokoro TTS: ${formatKokoroTtsStatus(kokoroTts)}`,
-    `Directory: ${process.cwd()}`,
+    `Directory: ${activeDirectory}`,
     `Bot: ${bot}`,
     `Chat: ${config.telegramChatId || 'not paired'}`,
     `Session: ${sessionId || '-'}`,
@@ -274,7 +281,7 @@ class Bridge {
       if (this.initialSessionId) {
         this.setBoundSessionId(this.initialSessionId);
         this.forceNewNextPrompt = false;
-      } else {
+      } else if (this.startMode === 'new') {
         this.setBoundSessionId(null);
       }
 
@@ -287,7 +294,7 @@ class Bridge {
           ? `HeyAgent connected. Next message starts a new ${providerLabel} session.`
           : this.initialSessionId
             ? `HeyAgent connected to ${providerLabel} session ${this.initialSessionId}.`
-            : `HeyAgent connected to your last ${providerLabel} session for the current folder: ${process.cwd()}`;
+            : `HeyAgent connected to your last ${providerLabel} session for: ${this.getActiveCwd()}`;
 
       await this.safeSendMessage([startupHeadline, 'Send /help for available commands.', DICTATION_HINT_TEXT].join('\n\n'));
 
@@ -327,6 +334,11 @@ class Bridge {
 
   getBoundSessionId() {
     return getCurrentSessionId(this.config, this.provider);
+  }
+
+  getActiveCwd() {
+    const chat = this.config.getAgentChat(this.config.activeAgentChatId);
+    return chat.cwd || process.cwd();
   }
 
   setBoundSessionId(sessionId) {
@@ -515,7 +527,7 @@ class Bridge {
           '/help - show this list',
           '/status - show current status',
           '/new - reset session (next prompt starts fresh)',
-          '/chat new|switch|list|delete|status - manage agent chat contexts',
+          '/chat new|switch|list|cwd|delete|status - manage agent chat contexts',
           '/reload - restart HeyAgent with the current command',
           '/stop - stop current execution and clear queued Telegram messages',
           '/claude - switch to Claude provider',
@@ -1081,7 +1093,8 @@ class Bridge {
     const run = async () => {
       const sourceLabel = source === 'cli' ? 'CLI' : 'Telegram';
       const providerLabel = formatProviderName(this.provider);
-      const resume = !this.forceNewNextPrompt;
+      const activeChat = this.config.getAgentChat(this.config.activeAgentChatId);
+      const resume = !this.forceNewNextPrompt && (Boolean(this.getBoundSessionId()) || activeChat.id === 'default');
       const abortController = new globalThis.AbortController();
       const groupedCount = Number.isFinite(options.groupedCount) ? Math.max(1, Number(options.groupedCount)) : 1;
       const progressReporter = source === 'telegram' ? this.createTelegramProgressReporter(providerLabel) : null;
@@ -1513,7 +1526,7 @@ class Bridge {
           'HeyAgent commands:',
           '/help - show command list',
           '/new - start a fresh session',
-          '/chat new|switch|list|delete|status - manage agent chat contexts',
+          '/chat new|switch|list|cwd|delete|status - manage agent chat contexts',
           '/reload - restart HeyAgent with the current command',
           '/stop - stop current execution and clear queued messages',
           '/claude - switch to Claude provider',
@@ -1648,7 +1661,8 @@ class Bridge {
         const provider = chat.provider || this.provider;
         const codex = chat.codexLastSessionId ? 'codex session' : 'codex new';
         const claude = chat.claudeLastSessionId ? 'claude session' : 'claude new';
-        return `${marker} ${chat.name} (${provider}, ${codex}, ${claude})`;
+        const cwd = chat.cwd || process.cwd();
+        return `${marker} ${chat.name} (${provider}, ${codex}, ${claude}, ${cwd})`;
       })
       .join('\n');
   }
@@ -1666,6 +1680,22 @@ class Bridge {
     this.forceNewNextPrompt = !getCurrentSessionId(this.config, this.provider);
   }
 
+  async updateActiveAgentChatCwd(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized || normalized === 'clear' || normalized === 'default') {
+      this.config.saveAgentChat(this.config.activeAgentChatId, { cwd: null });
+      return null;
+    }
+
+    const resolved = path.resolve(this.getActiveCwd(), normalized);
+    const resolvedStat = await stat(resolved);
+    if (!resolvedStat.isDirectory()) {
+      throw new Error(`${resolved} is not a directory`);
+    }
+    this.config.saveAgentChat(this.config.activeAgentChatId, { cwd: resolved });
+    return resolved;
+  }
+
   async handleAgentChatCommand(argument) {
     const parts = splitArgs(argument);
     const action = String(parts[0] || 'status').toLowerCase();
@@ -1677,8 +1707,9 @@ class Bridge {
         [
           `Active chat: ${active.name}`,
           `Provider: ${this.provider}`,
+          `Directory: ${this.getActiveCwd()}`,
           `Session: ${getCurrentSessionId(this.config, this.provider) || 'new'}`,
-          'Use /chat list, /chat new <name>, /chat switch <name>, or /chat delete <name>.',
+          'Use /chat list, /chat new <name>, /chat switch <name>, /chat cwd <path>, or /chat delete <name>.',
         ].join('\n')
       );
       return;
@@ -1704,6 +1735,7 @@ class Bridge {
       this.config.saveAgentChat(chatId, {
         name: value,
         provider: this.provider,
+        cwd: this.getActiveCwd(),
         claudeLastSessionId: null,
         codexLastSessionId: null,
       });
@@ -1727,10 +1759,29 @@ class Bridge {
 
       this.activateAgentChat(chat);
       await this.safeSendMessage(
-        [`Switched to chat: ${chat.name}`, `Provider: ${this.provider}`, `Session: ${getCurrentSessionId(this.config, this.provider) || 'new'}`].join(
-          '\n'
-        )
+        [
+          `Switched to chat: ${chat.name}`,
+          `Provider: ${this.provider}`,
+          `Directory: ${this.getActiveCwd()}`,
+          `Session: ${getCurrentSessionId(this.config, this.provider) || 'new'}`,
+        ].join('\n')
       );
+      return;
+    }
+
+    if (action === 'cwd' || action === 'cd' || action === 'dir') {
+      const active = this.config.getAgentChat(this.config.activeAgentChatId);
+      if (!value) {
+        await this.safeSendMessage(`Directory for ${active.name}: ${this.getActiveCwd()}`);
+        return;
+      }
+
+      try {
+        const nextCwd = await this.updateActiveAgentChatCwd(value);
+        await this.safeSendMessage(`Directory for ${active.name}: ${nextCwd || process.cwd()}`);
+      } catch (error) {
+        await this.safeSendMessage(`Cannot use directory: ${error.message}`);
+      }
       return;
     }
 
@@ -1755,7 +1806,7 @@ class Bridge {
       return;
     }
 
-    await this.safeSendMessage('Usage: /chat new|switch|list|delete|status');
+    await this.safeSendMessage('Usage: /chat new|switch|list|cwd|delete|status');
   }
 
   async handleTranscriptionCommand(argument) {
@@ -1850,9 +1901,9 @@ class Bridge {
       return runClaudePrompt(prompt, {
         resume,
         extraArgs: this.providerArgs,
-        cwd: process.cwd(),
+        cwd: this.getActiveCwd(),
         abortSignal,
-        sessionId: this.config.claudeLastSessionId,
+        sessionId: this.getBoundSessionId(),
         onSessionId: sessionId => {
           this.setBoundSessionId(sessionId);
         },
@@ -1863,10 +1914,10 @@ class Bridge {
       return runCodexPrompt(prompt, {
         resume,
         extraArgs: this.providerArgs,
-        cwd: process.cwd(),
+        cwd: this.getActiveCwd(),
         abortSignal,
         onProgress,
-        sessionId: this.config.codexLastSessionId,
+        sessionId: this.getBoundSessionId(),
         onSessionId: sessionId => {
           this.setBoundSessionId(sessionId);
         },

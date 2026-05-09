@@ -277,6 +277,7 @@ function handleAutostart(rawArgs) {
 function showStatus(config) {
   const paired = config.isPaired();
   const provider = config.provider;
+  const activeChat = config.getAgentChat(config.activeAgentChatId);
   const providerArgs = provider === 'codex' ? config.codexArgs : provider === 'claude' ? config.claudeArgs : [];
   const currentSession =
     provider === 'codex'
@@ -286,6 +287,8 @@ function showStatus(config) {
         : config.codexLastSessionId || config.claudeLastSessionId;
 
   console.log(`Provider: ${provider || 'not set'}`);
+  console.log(`Chat context: ${activeChat.name}`);
+  console.log(`Directory: ${activeChat.cwd || process.cwd()}`);
   console.log(`Telegram bot: ${config.telegramBotUsername ? `@${config.telegramBotUsername}` : 'not set'}`);
   console.log(`Telegram token: ${maskToken(config.telegramBotToken)}`);
   console.log(`Paired chat: ${paired ? config.telegramChatId : 'not paired'}`);

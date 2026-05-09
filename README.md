@@ -87,7 +87,7 @@ Inside Telegram:
 
 - `/help` list commands
 - `/new` force next prompt to run as a new session
-- `/chat new|switch|list|delete|status` manage named agent chat contexts
+- `/chat new|switch|list|cwd|delete|status` manage named agent chat contexts
 - `/reload` restart HeyAgent with the current command
 - `/claude` switch active provider to Claude
 - `/codex` switch active provider to Codex
@@ -101,7 +101,7 @@ Any other text message is forwarded to the active agent.
 When Kokoro TTS is available, agent replies include a **Build audio** button that generates an audio file on demand.
 Codex responses stream into a live Telegram preview while the final response is still running.
 
-Use `/chat new <name>` and `/chat switch <name>` to keep multiple agent conversations in the same Telegram bot. Each chat stores its own Claude and Codex session IDs.
+Use `/chat new <name>` and `/chat switch <name>` to keep multiple agent conversations in the same Telegram bot. Each chat stores its own Claude and Codex session IDs plus an optional working directory. Use `/chat cwd <path>` to run the active chat from another repo or folder.
 Use `/model <name>` to set the model flag for the active provider. HeyAgent runs providers non-interactively, so interactive provider slash commands are exposed as bridge commands where needed.
 
 Audio and voice notes are forwarded as attachments by default. Enable call mode with `/call on` to use Telegram voice notes as push-to-talk turns with text replies. Enable local transcript mode with `/transcription on`, or send a voice/audio message with caption `/transcription` to transcribe it once without sending it to the agent.

@@ -137,6 +137,7 @@ class Config {
       id: normalizedId,
       name: String(chat.name || normalizedId).trim() || normalizedId,
       provider: chat.provider || null,
+      cwd: chat.cwd || null,
       claudeLastSessionId: chat.claudeLastSessionId || null,
       codexLastSessionId: chat.codexLastSessionId || null,
       createdAt: chat.createdAt || null,
