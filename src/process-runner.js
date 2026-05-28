@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import spawn from 'cross-spawn';
 
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 

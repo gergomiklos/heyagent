@@ -58,6 +58,7 @@
   "dependencies": {
     "@inquirer/prompts": "^8.3.0",
     "cloudflared": "^0.7.1",
+    "cross-spawn": "^7.0.6",
     "node-telegram-bot-api": "^0.66.0",
     "qrcode-terminal": "^0.12.0"
   },
