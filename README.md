@@ -74,6 +74,8 @@ Inside Telegram:
 - `/new` force next prompt to run as a new session
 - `/claude` switch active provider to Claude
 - `/codex` switch active provider to Codex
+- `/projects` choose a project, then continue an existing session or start `New Claude` / `New Codex` where available
+- `/sessions` choose one of the 10 most recent Claude or Codex sessions from all local projects
 - `/status` show provider, directory, bot, session, and pairing
 - `/stop` stop current execution and clear queued messages
 
@@ -91,6 +93,8 @@ When running in an interactive terminal, HeyAgent also accepts live local input.
 - `/stop` stop current execution and clear queued Telegram messages
 - `/claude` switch to Claude provider
 - `/codex` switch to Codex provider
+- `/projects` send a project picker to Telegram
+- `/sessions` send the 10 most recent sessions to Telegram
 - `/status` print local bridge status
 - `/help` show local commands
 - `/exit` stop the running bridge
