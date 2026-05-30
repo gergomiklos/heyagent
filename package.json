@@ -15,6 +15,7 @@
     "dev:watch:claude": "node --watch --watch-path=src --watch-path=bin --watch-preserve-output ./bin/hey.js claude",
     "dev:watch:codex": "node --watch --watch-path=src --watch-path=bin --watch-preserve-output ./bin/hey.js codex",
     "dev:watch:status": "node --watch --watch-path=src --watch-path=bin --watch-preserve-output ./bin/hey.js status",
+    "test": "node --test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
