@@ -14,6 +14,7 @@ import { runClaudePrompt } from './providers/claude-provider.js';
 import { runCodexPrompt } from './providers/codex-provider.js';
 import { applyDefaultBypassArgs } from './args.js';
 import { formatSleepInhibitorStatus, startSleepInhibitor } from './sleep-inhibitor.js';
+import { SessionPicker, normalizeCommandName } from './session-picker.js';
 
 const BOTFATHER_URL = 'https://t.me/BotFather';
 const SETUP_MODE_PHONE = 'phone_onboarding';
@@ -74,7 +75,7 @@ function makePairCode() {
   }
 }
 
-function buildStatusText(config, provider, providerArgs = [], sleepInhibitorState = null) {
+function buildStatusText(config, provider, providerArgs = [], sleepInhibitorState = null, selectedSessionCwd = null) {
   const bot = config.telegramBotUsername ? `@${config.telegramBotUsername}` : 'not set';
   const sessionId = getCurrentSessionId(config, provider);
   const argsText = Array.isArray(providerArgs) && providerArgs.length > 0 ? providerArgs.join(' ') : '(none)';
@@ -84,10 +85,13 @@ function buildStatusText(config, provider, providerArgs = [], sleepInhibitorStat
     `Args: ${argsText}`,
     `Sleep prevention: ${sleepStatus}`,
     `Directory: ${process.cwd()}`,
+    selectedSessionCwd ? `Selected session directory: ${selectedSessionCwd}` : null,
     `Bot: ${bot}`,
     `Chat: ${config.telegramChatId || 'not paired'}`,
     `Session: ${sessionId || '-'}`,
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function isPairStartMessage(text, code) {
@@ -149,6 +153,8 @@ class Bridge {
     this.activePromptAbortReason = null;
     this.telegramPendingMessages = [];
     this.telegramDispatchScheduled = false;
+    this.sessionPicker = new SessionPicker(this, { gatherSessions: options.gatherSessions });
+    this.selectedSessionCwd = null;
 
     this.onSignal = () => {
       this.requestStopCurrentPrompt('shutdown');
@@ -271,6 +277,7 @@ class Bridge {
     const sourceLabel = source === 'cli' ? 'CLI' : 'Telegram';
     const args = splitArgs(rawArgs);
     const effective = this.switchProvider(provider);
+    this.selectedSessionCwd = null;
     const sessionId = this.getBoundSessionId() || '-';
     const argsText = effective.providerArgs.length > 0 ? effective.providerArgs.join(' ') : '(none)';
 
@@ -363,6 +370,8 @@ class Bridge {
           '/stop - stop current execution and clear queued Telegram messages',
           '/claude - switch to Claude provider',
           '/codex - switch to Codex provider',
+          '/projects - choose a project, then continue or start a session',
+          '/sessions - choose one of the 10 most recent sessions in Telegram',
           '/say <text> - send a raw message to Telegram',
           '/ask <prompt> - run prompt through provider and send response to Telegram',
           '/exit - stop HeyAgent',
@@ -374,7 +383,7 @@ class Bridge {
     }
 
     if (line === '/status') {
-      this.writeCliLine(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState));
+      this.writeCliLine(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState, this.selectedSessionCwd));
       return;
     }
 
@@ -407,6 +416,16 @@ class Bridge {
     if (line === '/codex' || line.startsWith('/codex ')) {
       const argument = line.slice('/codex'.length).trim();
       await this.handleProviderSwitchCommand('codex', argument, 'cli');
+      return;
+    }
+
+    if (line === '/sessions') {
+      await this.sessionPicker.showSessionPicker();
+      return;
+    }
+
+    if (line === '/projects') {
+      await this.sessionPicker.showProjectPicker();
       return;
     }
 
@@ -631,6 +650,8 @@ class Bridge {
         this.config.clearPairing();
       }
 
+      await this.sessionPicker.configureTelegramCommands(telegram);
+
       return true;
     } catch (error) {
       if (error instanceof TelegramApiError && error.status === 401) {
@@ -653,6 +674,7 @@ class Bridge {
     }
 
     this.forceNewNextPrompt = true;
+    this.selectedSessionCwd = null;
     this.config.setMany(updates);
   }
 
@@ -904,6 +926,11 @@ class Bridge {
           continue;
         }
 
+        if (message.type === 'callback') {
+          await this.sessionPicker.handleCallback(message);
+          continue;
+        }
+
         if (message.text && message.text.trim().startsWith('/')) {
           this.logCliEvent('Telegram command', message.text);
         }
@@ -1003,7 +1030,7 @@ class Bridge {
       .trim()
       .split(/\s+/)
       .filter(Boolean);
-    const command = String(parts[0] || '').toLowerCase();
+    const command = normalizeCommandName(parts[0]);
     const argument = parts.slice(1).join(' ').trim();
 
     if (command === '/help') {
@@ -1015,6 +1042,8 @@ class Bridge {
           '/stop - stop current execution and clear queued messages',
           '/claude - switch to Claude provider',
           '/codex - switch to Codex provider',
+          '/projects - choose a project, then continue or start a session',
+          '/sessions - choose one of the 10 most recent sessions',
           '/status - show current status',
           '',
           `Send any normal message to talk to ${this.provider}.`,
@@ -1040,8 +1069,18 @@ class Bridge {
       return;
     }
 
+    if (command === '/sessions') {
+      await this.sessionPicker.showSessionPicker();
+      return;
+    }
+
+    if (command === '/projects') {
+      await this.sessionPicker.showProjectPicker();
+      return;
+    }
+
     if (command === '/status') {
-      await this.safeSendMessage(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState));
+      await this.safeSendMessage(buildStatusText(this.config, this.provider, this.providerArgs, this.sleepInhibitorState, this.selectedSessionCwd));
       return;
     }
 
@@ -1064,12 +1103,13 @@ class Bridge {
 
   async runProvider(prompt, resume, options = {}) {
     const abortSignal = options.abortSignal || null;
+    const cwd = this.selectedSessionCwd || process.cwd();
 
     if (this.provider === 'claude') {
       return runClaudePrompt(prompt, {
         resume,
         extraArgs: this.providerArgs,
-        cwd: process.cwd(),
+        cwd,
         abortSignal,
         sessionId: this.config.claudeLastSessionId,
         onSessionId: sessionId => {
@@ -1082,7 +1122,7 @@ class Bridge {
       return runCodexPrompt(prompt, {
         resume,
         extraArgs: this.providerArgs,
-        cwd: process.cwd(),
+        cwd,
         abortSignal,
         sessionId: this.config.codexLastSessionId,
         onSessionId: sessionId => {
@@ -1105,7 +1145,7 @@ class Bridge {
     this.logCliEvent(`${from} -> Telegram`, text);
 
     try {
-      await this.telegram.sendMessage(chatId, text);
+      await this.telegram.sendMessage(chatId, text, options);
     } catch (error) {
       this.logger.error(`Outbox send failed: ${error.message}`);
 

@@ -172,6 +172,39 @@ function normalizeMessage(update) {
   };
 }
 
+function normalizeCallback(update) {
+  const callback = update?.callback_query;
+  const data = typeof callback?.data === 'string' ? callback.data.trim() : '';
+  const callbackQueryId = typeof callback?.id === 'string' ? callback.id.trim() : '';
+
+  if (!callback || !data || !callbackQueryId) {
+    return null;
+  }
+
+  const message = callback.message;
+  return {
+    updateId: Number.isInteger(update.update_id) ? update.update_id : null,
+    type: 'callback',
+    callbackQueryId,
+    data,
+    chatId: message?.chat?.id === undefined || message?.chat?.id === null ? null : String(message.chat.id),
+    chatType: typeof message?.chat?.type === 'string' ? message.chat.type : null,
+    userId: callback.from?.id === undefined || callback.from?.id === null ? null : String(callback.from.id),
+    messageId: Number.isInteger(message?.message_id) ? message.message_id : null,
+  };
+}
+
+function buildSendMessageOptions(options = {}) {
+  const replyMarkup = options.replyMarkup || options.reply_markup || null;
+  if (!replyMarkup) {
+    return {};
+  }
+
+  return {
+    reply_markup: replyMarkup,
+  };
+}
+
 class TelegramApi {
   constructor(token) {
     this.token = token;
@@ -191,6 +224,18 @@ class TelegramApi {
     }
   }
 
+  async setCommands(commands, options = {}) {
+    const normalizedCommands = Array.isArray(commands) ? commands : [];
+    const chatId = Number(options.chatId);
+    const scope = Number.isFinite(chatId) ? { scope: { type: 'chat', chat_id: chatId } } : undefined;
+
+    try {
+      await this.bot.setMyCommands(normalizedCommands, scope);
+    } catch (error) {
+      throw toTelegramError(error, 'Failed to configure Telegram bot commands');
+    }
+  }
+
   async ensurePollingMode() {
     try {
       await this.bot.deleteWebHook({
@@ -204,7 +249,7 @@ class TelegramApi {
   async getUpdates(cursor, timeout = 20) {
     const opts = {
       timeout: Number.isFinite(timeout) ? Math.max(1, Math.min(50, timeout)) : 20,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
     };
 
     if (Number.isFinite(cursor) && cursor >= 0) {
@@ -221,7 +266,7 @@ class TelegramApi {
           nextCursor = update.update_id;
         }
 
-        const normalized = normalizeMessage(update);
+        const normalized = normalizeMessage(update) || normalizeCallback(update);
         if (normalized) {
           messages.push(normalized);
         }
@@ -233,19 +278,36 @@ class TelegramApi {
     }
   }
 
-  async sendMessage(chatId, text) {
+  async sendMessage(chatId, text, options = {}) {
     const targetChatId = String(chatId || '').trim();
     if (!targetChatId) {
       throw new TelegramApiError('Missing Telegram chat ID');
     }
 
     const chunks = splitMessage(text);
+    const sendOptions = buildSendMessageOptions(options);
     try {
-      for (const chunk of chunks) {
-        await this.bot.sendMessage(targetChatId, chunk);
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index];
+        await this.bot.sendMessage(targetChatId, chunk, index === 0 ? sendOptions : {});
       }
     } catch (error) {
       throw toTelegramError(error, 'Failed to send Telegram message');
+    }
+  }
+
+  async answerCallbackQuery(callbackQueryId, text = '') {
+    const normalizedCallbackQueryId = String(callbackQueryId || '').trim();
+    if (!normalizedCallbackQueryId) {
+      throw new TelegramApiError('Missing Telegram callback query ID');
+    }
+
+    try {
+      await this.bot.answerCallbackQuery(normalizedCallbackQueryId, {
+        text: String(text || '').trim() || undefined,
+      });
+    } catch (error) {
+      throw toTelegramError(error, 'Failed to answer Telegram callback query');
     }
   }
 
@@ -268,4 +330,4 @@ class TelegramApi {
   }
 }
 
-export { TelegramApi, TelegramApiError };
+export { TelegramApi, TelegramApiError, buildSendMessageOptions, normalizeCallback, normalizeMessage };
