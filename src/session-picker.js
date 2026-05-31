@@ -297,7 +297,7 @@ class SessionPicker {
     const recentSessions = sessions.slice(0, RECENT_SESSION_PICKER_LIMIT);
 
     if (recentSessions.length === 0) {
-      await this.host.safeSendMessage('Geen Claude- of Codex-sessies gevonden.');
+      await this.host.safeSendMessage('No Claude or Codex sessions found.');
       return;
     }
 
@@ -377,8 +377,8 @@ class SessionPicker {
 
     const sessions = Array.isArray(group.sessions) ? group.sessions : [];
     if (sessions.length === 0) {
-      await this.answerCallback(callback.callbackQueryId, 'Geen sessies');
-      await this.host.safeSendMessage('Geen sessies gevonden voor dit project. Stuur opnieuw /projects.');
+      await this.answerCallback(callback.callbackQueryId, 'No sessions');
+      await this.host.safeSendMessage('No sessions found for this project. Send /projects again.');
       return;
     }
 

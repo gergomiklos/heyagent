@@ -14,6 +14,11 @@ async function writeJsonl(filePath, entries) {
   await writeFile(filePath, entries.map(entry => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join('\n'));
 }
 
+async function writeJsonFile(filePath, entry) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(entry));
+}
+
 test('gatherSessions combines Claude and Codex sessions sorted newest first', async () => {
   const homeDir = await makeHome();
   const claudeFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-alpha', 'claude-1.jsonl');
@@ -159,6 +164,124 @@ test('gatherSessions uses Claude Desktop local session titles', async () => {
 
   assert.equal(sessions[0].id, 'claude-title');
   assert.equal(sessions[0].title, 'Telegram plugin installation');
+});
+
+test('gatherSessions skips Claude sessions marked archived in Claude Desktop metadata', async () => {
+  const homeDir = await makeHome();
+  const activeClaudeFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-bvgeert', 'claude-active.jsonl');
+  const archivedClaudeFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-bvgeert', 'claude-archived.jsonl');
+  const metadataDir = path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude-code-sessions', 'workspace', 'project');
+
+  await writeJsonl(activeClaudeFile, [
+    {
+      type: 'user',
+      timestamp: '2026-05-29T08:00:00.000Z',
+      message: { content: 'active session prompt' },
+    },
+  ]);
+  await writeJsonl(archivedClaudeFile, [
+    {
+      type: 'user',
+      timestamp: '2026-05-29T09:00:00.000Z',
+      message: { content: 'archived session prompt' },
+    },
+  ]);
+  await writeJsonFile(path.join(metadataDir, 'active.json'), {
+    cliSessionId: 'claude-active',
+    title: 'Active Claude session',
+    isArchived: false,
+  });
+  await writeJsonFile(path.join(metadataDir, 'archived.json'), {
+    cliSessionId: 'claude-archived',
+    title: 'Archived Claude session',
+    isArchived: true,
+  });
+
+  const sessions = await gatherSessions({ homeDir, maxAgeDays: 3650 });
+
+  assert.deepEqual(
+    sessions.map(session => session.id),
+    ['claude-active']
+  );
+  assert.equal(sessions[0].title, 'Active Claude session');
+});
+
+test('gatherSessions treats duplicate Claude metadata as archived when any entry is archived', async () => {
+  const homeDir = await makeHome();
+  const claudeFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-bvgeert', 'claude-duplicate.jsonl');
+  const metadataDir = path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude-code-sessions', 'workspace', 'project');
+
+  await writeJsonl(claudeFile, [
+    {
+      type: 'user',
+      timestamp: '2026-05-29T08:00:00.000Z',
+      message: { content: 'duplicate metadata prompt' },
+    },
+  ]);
+  await writeJsonFile(path.join(metadataDir, 'duplicate-active.json'), {
+    cliSessionId: 'claude-duplicate',
+    title: 'Duplicate active metadata',
+    isArchived: false,
+  });
+  await writeJsonFile(path.join(metadataDir, 'duplicate-archived.json'), {
+    cliSessionId: 'claude-duplicate',
+    isArchived: true,
+  });
+
+  const sessions = await gatherSessions({ homeDir, maxAgeDays: 3650 });
+
+  assert.deepEqual(sessions, []);
+});
+
+test('gatherSessions skips Claude sessions with alternative archive markers', async () => {
+  const homeDir = await makeHome();
+  const activeClaudeFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-bvgeert', 'claude-visible.jsonl');
+  const archivedFlagFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-bvgeert', 'claude-archived-flag.jsonl');
+  const archivedStatusFile = path.join(homeDir, '.claude', 'projects', '-Users-geert-code-bvgeert', 'claude-archived-status.jsonl');
+  const metadataDir = path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude-code-sessions', 'workspace', 'project');
+
+  await writeJsonl(activeClaudeFile, [
+    {
+      type: 'user',
+      timestamp: '2026-05-29T08:00:00.000Z',
+      message: { content: 'visible session prompt' },
+    },
+  ]);
+  await writeJsonl(archivedFlagFile, [
+    {
+      type: 'user',
+      timestamp: '2026-05-29T09:00:00.000Z',
+      message: { content: 'archived flag prompt' },
+    },
+  ]);
+  await writeJsonl(archivedStatusFile, [
+    {
+      type: 'user',
+      timestamp: '2026-05-29T10:00:00.000Z',
+      message: { content: 'archived status prompt' },
+    },
+  ]);
+  await writeJsonFile(path.join(metadataDir, 'active.json'), {
+    cliSessionId: 'claude-visible',
+    title: 'Visible Claude session',
+    isArchived: false,
+  });
+  await writeJsonFile(path.join(metadataDir, 'archived-flag.json'), {
+    cliSessionId: 'claude-archived-flag',
+    archived: true,
+  });
+  await writeJsonFile(path.join(metadataDir, 'archived-status.json'), {
+    cliSessionId: 'claude-archived-status',
+    status: 'archived',
+  });
+
+  const sessions = await gatherSessions({ homeDir, maxAgeDays: 3650 });
+
+  assert.deepEqual(
+    sessions.map(session => session.id),
+    ['claude-visible']
+  );
+  assert.equal(sessions[0].title, 'Visible Claude session');
 });
 
 test('parseCodexSessionFile skips sessions without a user message', async () => {
